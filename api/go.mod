@@ -6,6 +6,8 @@ replace github.com/eclipse-symphony/symphony/coa => ../coa
 
 replace github.com/eclipse-symphony/symphony/packages/mage => ../packages/mage
 
+replace github.com/margo/sandbox => ../frameworks.industrial.edge-controls.orchestration.thirdparty.margo-sandbox
+
 require (
 	github.com/eclipse-symphony/symphony/coa v0.0.0
 	github.com/spf13/cobra v1.10.2

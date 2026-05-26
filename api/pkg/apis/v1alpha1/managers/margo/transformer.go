@@ -543,12 +543,21 @@ func (t *MargoTransformer) selectBoolPtr(preferred, fallback *bool) *bool {
 	return fallback
 }
 
+func (t *MargoTransformer) selectRequiredResourcesPtr(preferred, fallback *margoNonStdAPI.RequiredResources) *margoNonStdAPI.RequiredResources {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
+}
+
 // MergeWithAppPackage handles profile merging with cleaner logic
 func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDeploymentManifestResp, appPkg ApplicationPackage) error {
 	targetProfile := t.findMatchingProfileInApp(req.Spec.DeploymentProfile.Type, appPkg.Description.DeploymentProfiles)
 	if targetProfile == nil {
 		return nil // No matching profile found, continue without merging
 	}
+
+	req.Spec.DeploymentProfile.RequiredResources = targetProfile.RequiredResources
 
 	appComponents := t.buildComponentMap(*targetProfile)
 
@@ -692,6 +701,7 @@ func (t *MargoTransformer) mergeHelmProperties(appComp margoNonStdAPI.HelmApplic
 			Timeout:    t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
 			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
+		RequiredResources: t.selectRequiredResourcesPtr(reqComp.RequiredResources, appComp.RequiredResources),
 	}
 	return merged
 }
@@ -792,5 +802,6 @@ func (t *MargoTransformer) mergeComposeProperties(appComp margoNonStdAPI.Compose
 			Timeout:         t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
 			Wait:            t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
+		RequiredResources: t.selectRequiredResourcesPtr(reqComp.RequiredResources, appComp.RequiredResources),
 	}
 }

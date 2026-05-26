@@ -225,6 +225,21 @@ func (self *DeviceAgentVendor) saveDeviceCapabilities(request v1alpha2.COAReques
 			"Device ID in URL does not match device ID in capabilities", v1alpha2.BadRequest)
 	}
 
+	parsedCapabilitiesBody, marshalErr := json.Marshal(capabilities)
+	if marshalErr != nil {
+		deviceVendorLogger.WarnfCtx(pCtx,
+			"V (MargoDeviceVendor): saveDeviceCapabilities, failed to marshal parsed capabilities for logging: %v",
+			marshalErr)
+	}
+
+	deviceVendorLogger.InfofCtx(pCtx,
+		"V (MargoDeviceVendor): saveDeviceCapabilities, device=%s, cpu=%s, raw_body=%s, parsed_body=%s",
+		deviceClientId,
+		summarizeDeviceCPUCapabilities(capabilities),
+		string(request.Body),
+		string(parsedCapabilitiesBody),
+	)
+
 	// Call DeviceManager to report capabilities
 	err = self.DeviceManager.SaveDeviceCapabilities(pCtx, deviceClientId, capabilities)
 	if err != nil {
@@ -303,6 +318,21 @@ func (self *DeviceAgentVendor) updateDeviceCapabilities(request v1alpha2.COARequ
 			"Device ID in URL does not match device ID in capabilities", v1alpha2.BadRequest)
 	}
 
+	parsedCapabilitiesBody, marshalErr := json.Marshal(capabilities)
+	if marshalErr != nil {
+		deviceVendorLogger.WarnfCtx(pCtx,
+			"V (MargoDeviceVendor): updateDeviceCapabilities, failed to marshal parsed capabilities for logging: %v",
+			marshalErr)
+	}
+
+	deviceVendorLogger.InfofCtx(pCtx,
+		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, raw_body=%s, parsed_body=%s",
+		deviceClientId,
+		summarizeDeviceCPUCapabilities(capabilities),
+		string(request.Body),
+		string(parsedCapabilitiesBody),
+	)
+
 	// Call DeviceManager to update capabilities
 	err = self.DeviceManager.UpdateDeviceCapabilities(pCtx, deviceClientId, capabilities)
 	if err != nil {
@@ -357,6 +387,60 @@ func (self *DeviceAgentVendor) getToken(request v1alpha2.COARequest) v1alpha2.CO
 	}
 
 	return createSuccessResponse(span, v1alpha2.OK, &response)
+}
+
+func summarizeDeviceCPUCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	cpus := capabilities.Properties.Cpus
+	if cpus == nil || len(*cpus) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(*cpus))
+	for cpuIndex, cpu := range *cpus {
+		architecture := "<nil>"
+		if cpu.Architecture != nil {
+			architecture = string(*cpu.Architecture)
+		}
+
+		if cpu.Kinds == nil || len(*cpu.Kinds) == 0 {
+			parts = append(parts, fmt.Sprintf("cpu[%d]={cores=%g, architecture=%s}",
+				cpuIndex, cpu.Cores, architecture))
+			continue
+		}
+
+		for kindIndex, cpuKind := range *cpu.Kinds {
+			cpuClass := "<nil>"
+			if cpuKind.Class != nil {
+				cpuClass = string(*cpuKind.Class)
+			}
+
+			cpuType := "<nil>"
+			if cpuKind.Type != nil {
+				cpuType = string(*cpuKind.Type)
+			}
+
+			cpuCores := "<nil>"
+			if cpuKind.Cores != nil {
+				cpuCores = fmt.Sprintf("%g", *cpuKind.Cores)
+			}
+
+			baseMHz := "<nil>"
+			maxMHz := "<nil>"
+			if cpuKind.Frequency != nil {
+				if cpuKind.Frequency.BaseMHz != nil {
+					baseMHz = fmt.Sprintf("%g", *cpuKind.Frequency.BaseMHz)
+				}
+				if cpuKind.Frequency.MaxMHz != nil {
+					maxMHz = fmt.Sprintf("%g", *cpuKind.Frequency.MaxMHz)
+				}
+			}
+
+			parts = append(parts, fmt.Sprintf("cpu[%d].kind[%d]={cores=%s, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
+				cpuIndex, kindIndex, cpuCores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
+		}
+	}
+
+	return strings.Join(parts, "; ")
 }
 
 // Handler func for onboardDevice
@@ -1033,70 +1117,70 @@ func ParseRequestHeaders(ctx context.Context) (map[string]string, error) {
 // this preserves headers and the exact request URI. Otherwise builds a request using Route,
 // Parameters and Body. Some fields (RemoteAddr, TLS info, RequestURI internals) cannot be reconstructed.
 func COARequestToHTTPRequest(cr v1alpha2.COARequest) (*http.Request, error) {
- // prefer fasthttp.RequestCtx when available
- if fhCtx, ok := cr.Context.Value(v1alpha2.COAFastHTTPContextKey).(*fasthttp.RequestCtx); ok {
-  scheme := "https"
-  host := string(fhCtx.Request.Host())
-  uri := string(fhCtx.RequestURI())
-  full := scheme + "://" + host + uri
+	// prefer fasthttp.RequestCtx when available
+	if fhCtx, ok := cr.Context.Value(v1alpha2.COAFastHTTPContextKey).(*fasthttp.RequestCtx); ok {
+		scheme := "https"
+		host := string(fhCtx.Request.Host())
+		uri := string(fhCtx.RequestURI())
+		full := scheme + "://" + host + uri
 
-  body := io.NopCloser(bytes.NewReader(cr.Body))
-  r, err := http.NewRequest(cr.Method, full, body)
-  if err != nil {
-   return nil, err
-  }
+		body := io.NopCloser(bytes.NewReader(cr.Body))
+		r, err := http.NewRequest(cr.Method, full, body)
+		if err != nil {
+			return nil, err
+		}
 
-  // copy headers
-  fhCtx.Request.Header.VisitAll(func(k, v []byte) {
-   r.Header.Add(string(k), string(v))
-  })
+		// copy headers
+		fhCtx.Request.Header.VisitAll(func(k, v []byte) {
+			r.Header.Add(string(k), string(v))
+		})
 
-  // best-effort: fill remote addr
-  if addr := fhCtx.RemoteAddr(); addr != nil {
-   r.RemoteAddr = addr.String()
-  }
-  return r, nil
- }
+		// best-effort: fill remote addr
+		if addr := fhCtx.RemoteAddr(); addr != nil {
+			r.RemoteAddr = addr.String()
+		}
+		return r, nil
+	}
 
- // fallback: build from Route + Parameters + headers via ParseRequestHeaders
- u := &url.URL{
-  Path:   cr.Route,
-  Scheme: "https",
- }
+	// fallback: build from Route + Parameters + headers via ParseRequestHeaders
+	u := &url.URL{
+		Path:   cr.Route,
+		Scheme: "https",
+	}
 
- headers, _ := ParseRequestHeaders(cr.Context)
- // checking if headers is not nil
- if headers != nil {
-  // if headers are extracted, check for Host header & attach it
-  if v, ok := headers["Host"]; ok {
-   u.Host = v
-  }
+	headers, _ := ParseRequestHeaders(cr.Context)
+	// checking if headers is not nil
+	if headers != nil {
+		// if headers are extracted, check for Host header & attach it
+		if v, ok := headers["Host"]; ok {
+			u.Host = v
+		}
 
- }
+	}
 
- q := u.Query()
- for k, v := range cr.Parameters {
-  if v != "" {
-   q.Set(k, v)
-  }
- }
- u.RawQuery = q.Encode()
+	q := u.Query()
+	for k, v := range cr.Parameters {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	u.RawQuery = q.Encode()
 
- body := io.NopCloser(bytes.NewReader(cr.Body))
- r, err := http.NewRequest(cr.Method, u.String(), body)
- if err != nil {
-  return nil, err
- }
+	body := io.NopCloser(bytes.NewReader(cr.Body))
+	r, err := http.NewRequest(cr.Method, u.String(), body)
+	if err != nil {
+		return nil, err
+	}
 
- for k, v := range headers {
+	for k, v := range headers {
 
-  if k == "Host" {
-   r.Host = v
-  }
-  r.Header.Set(k, v)
- }
+		if k == "Host" {
+			r.Host = v
+		}
+		r.Header.Set(k, v)
+	}
 
- r.URL = u
+	r.URL = u
 
- return r, nil
+	return r, nil
 }

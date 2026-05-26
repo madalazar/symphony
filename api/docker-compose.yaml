@@ -8,5 +8,5 @@ services:
   api:
     image: ghcr.io/eclipse-symphony/symphony-api
     build: 
-      context: ../
-      dockerfile: api/Dockerfile
+      context: ../../
+      dockerfile: symphony/api/Dockerfile
