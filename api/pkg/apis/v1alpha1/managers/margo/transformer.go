@@ -2,6 +2,7 @@ package margo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -491,9 +492,31 @@ func (t *MargoTransformer) convertConfigurationSchema(
 // ConvertDeploymentProfile converts the deployment profile cleanly
 func (t *MargoTransformer) ConvertDeploymentProfile(profile margoNonStdAPI.DeploymentExecutionProfile) sbi.AppDeploymentProfile {
 	return sbi.AppDeploymentProfile{
-		Type:       sbi.AppDeploymentProfileType(profile.Type),
-		Components: t.convertComponents(profile.Components),
+		Type:              sbi.AppDeploymentProfileType(profile.Type),
+		Components:        t.convertComponents(profile.Components),
+		RequiredResources: t.convertRequiredResources(profile.RequiredResources),
 	}
+}
+
+// convertRequiredResources converts profile-level requiredResources between API models.
+func (t *MargoTransformer) convertRequiredResources(resources *margoNonStdAPI.RequiredResources) *sbi.RequiredResources {
+	if resources == nil {
+		return nil
+	}
+
+	data, err := json.Marshal(resources)
+	if err != nil {
+		transformerLogger.Error("Failed to marshal profile requiredResources during conversion", "error", err)
+		return nil
+	}
+
+	converted := &sbi.RequiredResources{}
+	if err := json.Unmarshal(data, converted); err != nil {
+		transformerLogger.Error("Failed to unmarshal profile requiredResources into SBI model", "error", err)
+		return nil
+	}
+
+	return converted
 }
 
 // convertComponents converts deployment profile components
@@ -582,8 +605,8 @@ func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDe
 
 func (t *MargoTransformer) mergeParameters(overrides *margoNonStdAPI.DeploymentParameters, defaultParams margoNonStdAPI.AppDescriptionParametersMap) error {
 	transformerLogger.Debug("Merging deployment parameter overrides with app description parameters",
-		"hasOverrides", overrides != nil,
-		"hasCompleteParams", len(defaultParams) > 0)
+		"hasOverrides: ", overrides != nil,
+		"hasCompleteParams: ", len(defaultParams) > 0)
 
 	// If no overrides provided, nothing to merge
 	if overrides == nil {
