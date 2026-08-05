@@ -725,6 +725,7 @@ func (t *MargoTransformer) mergeHelmProperties(appComp margoNonStdAPI.HelmApplic
 			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
 		RequiredResources: t.selectRequiredResourcesPtr(reqComp.RequiredResources, appComp.RequiredResources),
+		Workload:          t.selectWorkload(reqComp.Workload, appComp.Workload),
 	}
 	return merged
 }
@@ -826,5 +827,13 @@ func (t *MargoTransformer) mergeComposeProperties(appComp margoNonStdAPI.Compose
 			Wait:            t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
 		RequiredResources: t.selectRequiredResourcesPtr(reqComp.RequiredResources, appComp.RequiredResources),
+		Workload:          t.selectWorkload(reqComp.Workload, appComp.Workload),
 	}
+}
+
+func (t *MargoTransformer) selectWorkload(preferred, fallback *margoNonStdAPI.Workload) *margoNonStdAPI.Workload {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
 }
