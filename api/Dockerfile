@@ -23,10 +23,9 @@ ENV GOPATH=/go
 ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
 
 RUN mkdir /workspace /extensions
-COPY ./symphony/packages /workspace/packages
-COPY ./symphony/coa /workspace/coa
-COPY ./symphony/api /workspace/api
-COPY ./frameworks.industrial.edge-controls.orchestration.thirdparty.margo-sandbox /workspace/frameworks.industrial.edge-controls.orchestration.thirdparty.margo-sandbox
+COPY ./packages /workspace/packages
+COPY ./coa /workspace/coa
+COPY ./api /workspace/api
 WORKDIR /workspace/api
 # File permissions are not preserved when copying files in ADO. 
 RUN chmod +x pkg/apis/v1alpha1/providers/target/script/mock-*.sh
@@ -161,13 +160,11 @@ RUN set -x \
 # ENV ZONEINFO=/zoneinfo.zip
 COPY --from=build /dist /
 COPY --from=build /extensions /extensions
-WORKDIR /configs
-ADD ./symphony/api/symphony-api.json /configs/
-ADD ./symphony/api/symphony-api-margo.json /configs/
+ADD ./api/symphony-api.json /
+ADD ./api/symphony-api-margo.json /
 EXPOSE 8080
 EXPOSE 8081
 ENV LOG_LEVEL=Debug
-ENV CONFIG=symphony-api-margo.json
 ENV GOFAIL_HTTP="127.0.0.1:22381"
 							   
 CMD sh -c 'if [ -f /etc/pki/ca-trust/source/anchors/proxy-cert.crt ]; then update-ca-trust; fi && exec /symphony-api -c $CONFIG -l $LOG_LEVEL'
