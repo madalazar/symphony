@@ -233,9 +233,10 @@ func (self *DeviceAgentVendor) saveDeviceCapabilities(request v1alpha2.COAReques
 	}
 
 	deviceVendorLogger.InfofCtx(pCtx,
-		"V (MargoDeviceVendor): saveDeviceCapabilities, device=%s, cpu=%s, raw_body=%s, parsed_body=%s",
+		"V (MargoDeviceVendor): saveDeviceCapabilities, device=%s, cpu=%s, cache=%s, raw_body=%s, parsed_body=%s",
 		deviceClientId,
 		summarizeDeviceCPUCapabilities(capabilities),
+		summarizeDeviceCacheCapabilities(capabilities),
 		string(request.Body),
 		string(parsedCapabilitiesBody),
 	)
@@ -326,9 +327,10 @@ func (self *DeviceAgentVendor) updateDeviceCapabilities(request v1alpha2.COARequ
 	}
 
 	deviceVendorLogger.InfofCtx(pCtx,
-		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, raw_body=%s, parsed_body=%s",
+		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, cache=%s, raw_body=%s, parsed_body=%s",
 		deviceClientId,
 		summarizeDeviceCPUCapabilities(capabilities),
+		summarizeDeviceCacheCapabilities(capabilities),
 		string(request.Body),
 		string(parsedCapabilitiesBody),
 	)
@@ -438,6 +440,35 @@ func summarizeDeviceCPUCapabilities(capabilities margoStdSbiAPI.DeviceCapabiliti
 			parts = append(parts, fmt.Sprintf("cpu[%d].kind[%d]={cores=%s, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
 				cpuIndex, kindIndex, cpuCores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
 		}
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func summarizeDeviceCacheCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	caches := capabilities.Properties.Cache
+	if caches == nil || len(*caches) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(*caches))
+	for cacheIndex, cache := range *caches {
+		size := cache.Size
+		if size == "" {
+			size = "<empty>"
+		}
+
+		allocationTypes := "none"
+		if len(cache.AllocationTypes) > 0 {
+			allocations := make([]string, 0, len(cache.AllocationTypes))
+			for _, allocationType := range cache.AllocationTypes {
+				allocations = append(allocations, string(allocationType))
+			}
+			allocationTypes = strings.Join(allocations, "|")
+		}
+
+		parts = append(parts, fmt.Sprintf("cache[%d]={level=%s, allocationTypes=[%s], size=%s}",
+			cacheIndex, cache.Level, allocationTypes, size))
 	}
 
 	return strings.Join(parts, "; ")

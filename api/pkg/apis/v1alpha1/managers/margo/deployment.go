@@ -167,6 +167,7 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 	}
 
 	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+	s.logProfileCacheRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 
 	// Store in database (single call)
 	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
@@ -453,6 +454,60 @@ func (s *DeploymentManager) logProfileCPURequirements(ctx context.Context, appPk
 	}
 }
 
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logProfileCacheRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
+	if appPkg.Description == nil {
+		return
+	}
+
+	for _, profile := range appPkg.Description.DeploymentProfiles {
+		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
+			continue
+		}
+		for componentIndex, component := range profile.Components {
+			var componentName string
+			var requiredResources *margoNonStdAPI.RequiredResources
+
+			switch profileType {
+			case margoNonStdAPI.DeploymentExecutionProfileTypeHelm:
+				helmComponent, err := component.AsHelmApplicationDeploymentProfileComponent()
+				if err != nil {
+					deploymentLogger.WarnfCtx(ctx, "CreateDeployment cache scaffolding: failed to decode Helm component at index %d: %v", componentIndex, err)
+					continue
+				}
+				componentName = helmComponent.Name
+				requiredResources = helmComponent.RequiredResources
+			case margoNonStdAPI.DeploymentExecutionProfileTypeCompose:
+				composeComponent, err := component.AsComposeApplicationDeploymentProfileComponent()
+				if err != nil {
+					deploymentLogger.WarnfCtx(ctx, "CreateDeployment cache scaffolding: failed to decode Compose component at index %d: %v", componentIndex, err)
+					continue
+				}
+				componentName = composeComponent.Name
+				requiredResources = composeComponent.RequiredResources
+			}
+
+			if requiredResources == nil || requiredResources.Cache == nil {
+				continue
+			}
+
+			for cacheIndex, cache := range *requiredResources.Cache {
+				deploymentLogger.InfofCtx(ctx,
+					"CreateDeployment cache scaffolding (component): profileType=%s componentIndex=%d component=%s cacheIndex=%d level=%s allocation=%s size=%s",
+					profileType,
+					componentIndex,
+					componentName,
+					cacheIndex,
+					cache.Level,
+					cache.Allocation,
+					stringPtrToString(cache.Size),
+				)
+			}
+		}
+		return
+	}
+}
+
 func float32PtrToString(value *float32) string {
 	if value == nil {
 		return ""
@@ -472,4 +527,11 @@ func cpuTypePtrToString(value *margoNonStdAPI.CpuType) string {
 		return ""
 	}
 	return string(*value)
+}
+
+func stringPtrToString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
