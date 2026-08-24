@@ -169,6 +169,7 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 	s.logProfileCacheRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 	s.logProfileMemoryRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+	s.logProfileWorkloadRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 
 	// Store in database (single call)
 	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
@@ -542,6 +543,101 @@ func (s *DeploymentManager) logProfileMemoryRequirements(ctx context.Context, ap
 			string(memoryJSON),
 		)
 		return
+	}
+}
+
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logProfileWorkloadRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
+	if appPkg.Description == nil {
+		return
+	}
+
+	for _, profile := range appPkg.Description.DeploymentProfiles {
+		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
+			continue
+		}
+
+		for compIdx, component := range profile.Components {
+			switch profile.Type {
+			case margoNonStdAPI.AppDeploymentProfileTypeCompose:
+				if composeComp, err := component.AsComposeApplicationDeploymentProfileComponent(); err == nil {
+					deploymentLogger.InfofCtx(ctx,
+						"[COMPOSE]CreateDeployment workload scaffolding: profileType=%s component=%s",
+						profileType, composeComp.Name,
+					)
+					s.logComponentWorkload(ctx, profileType, "compose", compIdx, composeComp.Name, composeComp.Workload)
+					continue
+				}
+			case margoNonStdAPI.AppDeploymentProfileTypeHelm:
+				if helmComp, err := component.AsHelmApplicationDeploymentProfileComponent(); err == nil {
+					deploymentLogger.InfofCtx(ctx,
+						"[HELM]CreateDeployment workload scaffolding: profileType=%s component=%s",
+						profileType, helmComp.Name,
+					)
+					s.logComponentWorkload(ctx, profileType, "helm", compIdx, helmComp.Name, helmComp.Workload)
+					continue
+				}
+			}
+
+			deploymentLogger.WarnfCtx(ctx,
+				"CreateDeployment workload scaffolding: failed to decode component at index=%d for profileType=%s expectedProfileType=%s",
+				compIdx, profileType, profile.Type,
+			)
+		}
+		return
+	}
+}
+
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logComponentWorkload(
+	ctx context.Context,
+	profileType margoNonStdAPI.DeploymentExecutionProfileType,
+	componentKind string,
+	componentIndex int,
+	componentName string,
+	workload *margoNonStdAPI.Workload,
+) {
+	if workload == nil {
+		deploymentLogger.InfofCtx(ctx,
+			"CreateDeployment workload scaffolding (component): profileType=%s kind=%s componentIndex=%d componentName=%s hasWorkload=false",
+			profileType, componentKind, componentIndex, componentName,
+		)
+		return
+	}
+
+	scheduling := ""
+	if workload.Scheduling != nil {
+		scheduling = string(*workload.Scheduling)
+	}
+	priority := ""
+	if workload.Priority != nil {
+		priority = fmt.Sprintf("%d", *workload.Priority)
+	}
+	nice := ""
+	if workload.Nice != nil {
+		nice = fmt.Sprintf("%d", *workload.Nice)
+	}
+
+	deploymentLogger.InfofCtx(ctx,
+		"CreateDeployment workload scaffolding (component): profileType=%s kind=%s componentIndex=%d componentName=%s scheduling=%s priority=%s nice=%s",
+		profileType, componentKind, componentIndex, componentName, scheduling, priority, nice,
+	)
+
+	if workload.Deadline != nil {
+		deadline, period, runtime := "", "", ""
+		if workload.Deadline.Deadline != nil {
+			deadline = fmt.Sprintf("%d", *workload.Deadline.Deadline)
+		}
+		if workload.Deadline.Period != nil {
+			period = fmt.Sprintf("%d", *workload.Deadline.Period)
+		}
+		if workload.Deadline.Runtime != nil {
+			runtime = fmt.Sprintf("%d", *workload.Deadline.Runtime)
+		}
+		deploymentLogger.InfofCtx(ctx,
+			"CreateDeployment workload scaffolding (component deadline): profileType=%s kind=%s componentIndex=%d componentName=%s deadline=%s period=%s runtime=%s",
+			profileType, componentKind, componentIndex, componentName, deadline, period, runtime,
+		)
 	}
 }
 
