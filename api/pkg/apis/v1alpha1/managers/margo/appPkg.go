@@ -504,6 +504,7 @@ func (s *AppPkgManager) processOciRepositoryWithStateTracking(
 
 	s.logProfileCPURequirementsOnUpload(ctx, appDesc)
 	s.logProfileCacheRequirementsOnUpload(ctx, appDesc)
+	s.logProfileMemoryRequirementsOnUpload(ctx, appDesc)
 
 	// Phase 6: Validate application description
 	appPkgLogger.Debug(
@@ -942,6 +943,42 @@ func (s *AppPkgManager) logProfileCacheRequirementsOnUpload(
 				string(cacheJSON),
 			)
 		}
+	}
+}
+
+// TODO: remove after implementation is added; just for logging purposes for now
+func (s *AppPkgManager) logProfileMemoryRequirementsOnUpload(
+	ctx context.Context,
+	appDesc *margoNonStdAPI.AppDescription,
+) {
+	if appDesc == nil {
+		return
+	}
+
+	for profileIdx, profile := range appDesc.DeploymentProfiles {
+		if profile.RequiredResources == nil || profile.RequiredResources.Memory == nil {
+			continue
+		}
+
+		memoryJSON, err := json.Marshal(profile.RequiredResources.Memory)
+		if err != nil {
+			appPkgLogger.WarnfCtx(ctx,
+				"Package upload memory requirements: failed to marshal deploymentProfile.requiredResources.memory for appId=%s profileIndex=%d: %v",
+				*appDesc.Id,
+				profileIdx,
+				err,
+			)
+			continue
+		}
+
+		appPkgLogger.InfofCtx(ctx,
+			"Package upload memory requirements: appId=%s appVersion=%s profileIndex=%d profileType=%s memory=%s",
+			*appDesc.Id,
+			appDesc.Metadata.Version,
+			profileIdx,
+			profile.Type,
+			string(memoryJSON),
+		)
 	}
 }
 
