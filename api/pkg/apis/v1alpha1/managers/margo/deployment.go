@@ -166,6 +166,8 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 		return nil, fmt.Errorf("failed to process deployment profiles: %w", err)
 	}
 
+	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+
 	// Store in database (single call)
 	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
 		return nil, fmt.Errorf("failed to store deployment: %w", err)
@@ -213,7 +215,7 @@ func (s *DeploymentManager) buildInitialDeployment(req margoNonStdAPI.Applicatio
 			Namespace:         req.Metadata.Namespace,
 			CreationTimestamp: &now,
 		},
-		Id:                &deploymentId,
+		Id:   &deploymentId,
 		Spec: req.Spec,
 		Status: &margoNonStdAPI.ApplicationDeploymentStatus{
 			State:          &state,
@@ -351,15 +353,15 @@ func (s *DeploymentManager) buildDesiredState(deployment margoNonStdAPI.Applicat
 			ApiVersion: deployment.ApiVersion,
 			Kind:       deployment.Kind,
 			Metadata: sbi.AppDeploymentMetadata{
-				Name:        deployment.Metadata.Name,
-				Namespace:   namespace,
+				Name:      deployment.Metadata.Name,
+				Namespace: namespace,
 				// Annotations: deployment.Metadata.Annotations,
-				Labels:      deployment.Metadata.Labels,
+				Labels:   deployment.Metadata.Labels,
 				DeviceId: *deployment.Spec.DeviceRef.Id,
 			},
-			Id:          deployment.Id,
+			Id: deployment.Id,
 			Spec: sbi.AppDeploymentSpec{
-				ApplicationId: appId,
+				ApplicationId:     appId,
 				DeploymentProfile: s.tranformer.ConvertDeploymentProfile(deployment.Spec.DeploymentProfile),
 				Parameters:        &sbi.AppDeploymentParams{},
 			},
@@ -395,4 +397,79 @@ func (s *DeploymentManager) buildDesiredState(deployment margoNonStdAPI.Applicat
 	}
 
 	return desiredState, nil
+}
+
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logProfileCPURequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
+	if appPkg.Description == nil {
+		return
+	}
+
+	for _, profile := range appPkg.Description.DeploymentProfiles {
+		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
+			continue
+		}
+		for componentIndex, component := range profile.Components {
+			var componentName string
+			var requiredResources *margoNonStdAPI.RequiredResources
+
+			switch profileType {
+			case margoNonStdAPI.DeploymentExecutionProfileTypeHelm:
+				helmComponent, err := component.AsHelmApplicationDeploymentProfileComponent()
+				if err != nil {
+					deploymentLogger.WarnfCtx(ctx, "CreateDeployment CPU scaffolding: failed to decode Helm component at index %d: %v", componentIndex, err)
+					continue
+				}
+				componentName = helmComponent.Name
+				requiredResources = helmComponent.RequiredResources
+			case margoNonStdAPI.DeploymentExecutionProfileTypeCompose:
+				composeComponent, err := component.AsComposeApplicationDeploymentProfileComponent()
+				if err != nil {
+					deploymentLogger.WarnfCtx(ctx, "CreateDeployment CPU scaffolding: failed to decode Compose component at index %d: %v", componentIndex, err)
+					continue
+				}
+				componentName = composeComponent.Name
+				requiredResources = composeComponent.RequiredResources
+			}
+
+			if requiredResources == nil || requiredResources.Cpu == nil {
+				continue
+			}
+
+			for cpuIndex, cpu := range *requiredResources.Cpu {
+				deploymentLogger.InfofCtx(ctx,
+					"CreateDeployment CPU scaffolding (component): profileType=%s componentIndex=%d component=%s cpuIndex=%d cores=%v class=%s type=%s",
+					profileType,
+					componentIndex,
+					componentName,
+					cpuIndex,
+					float32PtrToString(cpu.Cores),
+					cpuClassPtrToString(cpu.Class),
+					cpuTypePtrToString(cpu.Type),
+				)
+			}
+		}
+		return
+	}
+}
+
+func float32PtrToString(value *float32) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", *value)
+}
+
+func cpuClassPtrToString(value *margoNonStdAPI.CpuClass) string {
+	if value == nil {
+		return ""
+	}
+	return string(*value)
+}
+
+func cpuTypePtrToString(value *margoNonStdAPI.CpuType) string {
+	if value == nil {
+		return ""
+	}
+	return string(*value)
 }
