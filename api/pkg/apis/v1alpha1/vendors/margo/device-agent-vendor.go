@@ -402,42 +402,29 @@ func summarizeDeviceCPUCapabilities(capabilities margoStdSbiAPI.DeviceCapabiliti
 			architecture = string(*cpu.Architecture)
 		}
 
-		if cpu.Kinds == nil || len(*cpu.Kinds) == 0 {
-			parts = append(parts, fmt.Sprintf("cpu[%d]={cores=%g, architecture=%s}",
-				cpuIndex, cpu.Cores, architecture))
-			continue
+		cpuClass := "<nil>"
+		if cpu.Class != nil {
+			cpuClass = string(*cpu.Class)
 		}
 
-		for kindIndex, cpuKind := range *cpu.Kinds {
-			cpuClass := "<nil>"
-			if cpuKind.Class != nil {
-				cpuClass = string(*cpuKind.Class)
-			}
-
-			cpuType := "<nil>"
-			if cpuKind.Type != nil {
-				cpuType = string(*cpuKind.Type)
-			}
-
-			cpuCores := "<nil>"
-			if cpuKind.Cores != nil {
-				cpuCores = fmt.Sprintf("%g", *cpuKind.Cores)
-			}
-
-			baseMHz := "<nil>"
-			maxMHz := "<nil>"
-			if cpuKind.Frequency != nil {
-				if cpuKind.Frequency.BaseMHz != nil {
-					baseMHz = fmt.Sprintf("%g", *cpuKind.Frequency.BaseMHz)
-				}
-				if cpuKind.Frequency.MaxMHz != nil {
-					maxMHz = fmt.Sprintf("%g", *cpuKind.Frequency.MaxMHz)
-				}
-			}
-
-			parts = append(parts, fmt.Sprintf("cpu[%d].kind[%d]={cores=%s, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
-				cpuIndex, kindIndex, cpuCores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
+		cpuType := "<nil>"
+		if cpu.Type != nil {
+			cpuType = string(*cpu.Type)
 		}
+
+		baseMHz := "<nil>"
+		maxMHz := "<nil>"
+		if cpu.Frequency != nil {
+			if cpu.Frequency.BaseMHz != nil {
+				baseMHz = fmt.Sprintf("%g", *cpu.Frequency.BaseMHz)
+			}
+			if cpu.Frequency.MaxMHz != nil {
+				maxMHz = fmt.Sprintf("%g", *cpu.Frequency.MaxMHz)
+			}
+		}
+
+		parts = append(parts, fmt.Sprintf("cpu[%d]={cores=%g, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
+			cpuIndex, cpu.Cores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
 	}
 
 	return strings.Join(parts, "; ")
