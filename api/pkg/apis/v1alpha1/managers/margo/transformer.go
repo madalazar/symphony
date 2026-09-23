@@ -611,8 +611,8 @@ func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDe
 
 func (t *MargoTransformer) mergeParameters(overrides *margoNonStdAPI.DeploymentParameters, defaultParams margoNonStdAPI.AppDescriptionParametersMap) error {
 	transformerLogger.Debug("Merging deployment parameter overrides with app description parameters",
-		"hasOverrides", overrides != nil,
-		"hasCompleteParams", len(defaultParams) > 0)
+		"hasOverrides: ", overrides != nil,
+		"hasCompleteParams: ", len(defaultParams) > 0)
 
 	// If no overrides provided, nothing to merge
 	if overrides == nil {

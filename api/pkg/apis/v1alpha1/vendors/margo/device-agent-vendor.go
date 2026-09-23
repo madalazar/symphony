@@ -183,10 +183,11 @@ func (self *DeviceAgentVendor) updateDeviceCapabilities(request v1alpha2.COARequ
 	}
 
 	deviceVendorLogger.InfofCtx(pCtx,
-		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, cache=%s, raw_body=%s, parsed_body=%s",
+		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, cache=%s, memory=%s, raw_body=%s, parsed_body=%s",
 		deviceId,
 		summarizeDeviceCPUCapabilities(capabilities),
 		summarizeDeviceCacheCapabilities(capabilities),
+		summarizeDeviceMemoryCapabilities(capabilities),
 		string(request.Body),
 		string(parsedCapabilitiesBody),
 	)
@@ -809,4 +810,22 @@ func summarizeDeviceCacheCapabilities(capabilities margoStdSbiAPI.DeviceCapabili
 	}
 
 	return strings.Join(parts, "; ")
+}
+
+func summarizeDeviceMemoryCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	memory := capabilities.Properties.Memory
+	if memory == nil {
+		return "none"
+	}
+
+	bwTypes := "none"
+	if memory.BandwidthAllocationTypes != nil && len(*memory.BandwidthAllocationTypes) > 0 {
+		parts := make([]string, 0, len(*memory.BandwidthAllocationTypes))
+		for _, bwType := range *memory.BandwidthAllocationTypes {
+			parts = append(parts, string(bwType))
+		}
+		bwTypes = strings.Join(parts, ",")
+	}
+
+	return fmt.Sprintf("memory={size=%s, bandwidthAllocationTypes=%s}", memory.Size, bwTypes)
 }

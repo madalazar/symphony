@@ -168,6 +168,7 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 
 	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 	s.logProfileCacheRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+	s.logProfileMemoryRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 
 	// Store in database (single call)
 	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
@@ -465,6 +466,51 @@ func (s *DeploymentManager) logProfileCacheRequirements(ctx context.Context, app
 					stringPtrToString(cache.Size),
 				)
 			}
+		}
+		return
+	}
+}
+
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logProfileMemoryRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
+	if appPkg.Description == nil {
+		return
+	}
+
+	for _, profile := range appPkg.Description.DeploymentProfiles {
+		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
+			continue
+		}
+
+		for componentIndex, component := range profile.Components {
+			appComponent, err := component.AsApplicationDeploymentProfileComponent()
+			if err != nil {
+				deploymentLogger.WarnfCtx(ctx, "CreateDeployment memory scaffolding: failed to decode component at index %d: %v", componentIndex, err)
+				continue
+			}
+
+			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Memory == nil {
+				continue
+			}
+
+			memoryJSON, err := json.Marshal(appComponent.DeviceConstraints.CapacityRequirements.Memory)
+			if err != nil {
+				deploymentLogger.WarnfCtx(ctx,
+					"CreateDeployment memory scaffolding: failed to marshal capacityRequirements.memory for profileType=%s componentIndex=%d: %v",
+					profileType,
+					componentIndex,
+					err,
+				)
+				continue
+			}
+
+			deploymentLogger.InfofCtx(ctx,
+				"CreateDeployment memory scaffolding (component): profileType=%s componentIndex=%d component=%s memory=%s",
+				profileType,
+				componentIndex,
+				appComponent.Name,
+				string(memoryJSON),
+			)
 		}
 		return
 	}

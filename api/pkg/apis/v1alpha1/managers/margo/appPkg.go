@@ -504,6 +504,7 @@ func (s *AppPkgManager) processOciRepositoryWithStateTracking(
 
 	s.logProfileCPURequirementsOnUpload(ctx, appDesc)
 	s.logProfileCacheRequirementsOnUpload(ctx, appDesc)
+	s.logProfileMemoryRequirementsOnUpload(ctx, appDesc)
 
 	// Phase 6: Validate application description
 	appPkgLogger.Debug(
@@ -908,6 +909,53 @@ func (s *AppPkgManager) logProfileCacheRequirementsOnUpload(
 				appComponent.Name,
 				componentIdx,
 				string(cacheJSON),
+			)
+		}
+	}
+}
+
+// TODO: remove after implementation is added; just for logging purposes for now
+func (s *AppPkgManager) logProfileMemoryRequirementsOnUpload(
+	ctx context.Context,
+	appDesc *margoNonStdAPI.AppDescription,
+) {
+	if appDesc == nil {
+		return
+	}
+
+	for profileIdx, profile := range appDesc.DeploymentProfiles {
+		for componentIdx, component := range profile.Components {
+			appComponent, err := component.AsApplicationDeploymentProfileComponent()
+			if err != nil {
+				appPkgLogger.WarnfCtx(ctx, "Package upload memory requirements: failed to decode component at index %d: %v", componentIdx, err)
+				continue
+			}
+
+			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Memory == nil {
+				continue
+			}
+
+			memoryJSON, err := json.Marshal(appComponent.DeviceConstraints.CapacityRequirements.Memory)
+			if err != nil {
+				appPkgLogger.WarnfCtx(ctx,
+					"Package upload memory requirements: failed to marshal capacityRequirements.memory for appId=%s profileIndex=%d componentIndex=%d: %v",
+					*appDesc.Id,
+					profileIdx,
+					componentIdx,
+					err,
+				)
+				continue
+			}
+
+			appPkgLogger.InfofCtx(ctx,
+				"Package upload memory requirements: appId=%s appVersion=%s profileIndex=%d profileType=%s component=%s componentIndex=%d memory=%s",
+				*appDesc.Id,
+				appDesc.Metadata.Version,
+				profileIdx,
+				profile.Type,
+				appComponent.Name,
+				componentIdx,
+				string(memoryJSON),
 			)
 		}
 	}
