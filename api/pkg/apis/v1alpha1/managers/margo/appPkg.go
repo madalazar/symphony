@@ -503,6 +503,7 @@ func (s *AppPkgManager) processOciRepositoryWithStateTracking(
 	}
 
 	s.logProfileCPURequirementsOnUpload(ctx, appDesc)
+	s.logProfileCacheRequirementsOnUpload(ctx, appDesc)
 
 	// Phase 6: Validate application description
 	appPkgLogger.Debug(
@@ -860,6 +861,53 @@ func (s *AppPkgManager) logProfileCPURequirementsOnUpload(
 				appComponent.Name,
 				componentIdx,
 				string(cpuJSON),
+			)
+		}
+	}
+}
+
+// TODO: remove after implementation is added; just for logging purposes for now
+func (s *AppPkgManager) logProfileCacheRequirementsOnUpload(
+	ctx context.Context,
+	appDesc *margoNonStdAPI.AppDescription,
+) {
+	if appDesc == nil {
+		return
+	}
+
+	for profileIdx, profile := range appDesc.DeploymentProfiles {
+		for componentIdx, component := range profile.Components {
+			appComponent, err := component.AsApplicationDeploymentProfileComponent()
+			if err != nil {
+				appPkgLogger.WarnfCtx(ctx, "Package upload cache requirements: failed to decode component at index %d: %v", componentIdx, err)
+				continue
+			}
+
+			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Cache == nil {
+				continue
+			}
+
+			cacheJSON, err := json.Marshal(appComponent.DeviceConstraints.CapacityRequirements.Cache)
+			if err != nil {
+				appPkgLogger.WarnfCtx(ctx,
+					"Package upload cache requirements: failed to marshal capacityRequirements.cache for appId=%s profileIndex=%d componentIndex=%d: %v",
+					*appDesc.Id,
+					profileIdx,
+					componentIdx,
+					err,
+				)
+				continue
+			}
+
+			appPkgLogger.InfofCtx(ctx,
+				"Package upload cache requirements: appId=%s appVersion=%s profileIndex=%d profileType=%s component=%s componentIndex=%d cache=%s",
+				*appDesc.Id,
+				appDesc.Metadata.Version,
+				profileIdx,
+				profile.Type,
+				appComponent.Name,
+				componentIdx,
+				string(cacheJSON),
 			)
 		}
 	}
