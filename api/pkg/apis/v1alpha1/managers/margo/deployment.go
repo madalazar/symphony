@@ -166,6 +166,8 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 		return nil, fmt.Errorf("failed to process deployment profiles: %w", err)
 	}
 
+	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+
 	// Store in database (single call)
 	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
 		return nil, fmt.Errorf("failed to store deployment: %w", err)
@@ -389,4 +391,63 @@ func (s *DeploymentManager) buildDesiredState(deployment margoNonStdAPI.Applicat
 	}
 
 	return desiredState, nil
+}
+
+// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
+func (s *DeploymentManager) logProfileCPURequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
+	if appPkg.Description == nil {
+		return
+	}
+
+	for _, profile := range appPkg.Description.DeploymentProfiles {
+		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
+			continue
+		}
+		for componentIndex, component := range profile.Components {
+			appComponent, err := component.AsApplicationDeploymentProfileComponent()
+			if err != nil {
+				deploymentLogger.WarnfCtx(ctx, "CreateDeployment CPU scaffolding: failed to decode component at index %d: %v", componentIndex, err)
+				continue
+			}
+
+			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Cpu == nil {
+				continue
+			}
+
+			for cpuIndex, cpu := range *appComponent.DeviceConstraints.CapacityRequirements.Cpu {
+				deploymentLogger.InfofCtx(ctx,
+					"CreateDeployment CPU scaffolding (component): profileType=%s componentIndex=%d component=%s cpuIndex=%d cores=%v class=%s type=%s",
+					profileType,
+					componentIndex,
+					appComponent.Name,
+					cpuIndex,
+					cpu.Cores,
+					cpuClassPtrToString(cpu.Class),
+					cpuTypePtrToString(cpu.Type),
+				)
+			}
+		}
+		return
+	}
+}
+
+func float32PtrToString(value *float32) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", *value)
+}
+
+func cpuClassPtrToString(value *margoNonStdAPI.DeploymentCpuRequirementClass) string {
+	if value == nil {
+		return ""
+	}
+	return string(*value)
+}
+
+func cpuTypePtrToString(value *margoNonStdAPI.DeploymentCpuRequirementType) string {
+	if value == nil {
+		return ""
+	}
+	return string(*value)
 }

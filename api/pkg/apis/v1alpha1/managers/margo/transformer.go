@@ -550,6 +550,32 @@ func (t *MargoTransformer) selectBoolPtr(preferred, fallback *bool) *bool {
 	return fallback
 }
 
+func (t *MargoTransformer) selectCapacityRequirements(preferred, fallback *margoNonStdAPI.CapacityRequirements) *margoNonStdAPI.CapacityRequirements {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
+}
+
+func (t *MargoTransformer) selectDeviceConstraints(preferred, fallback *margoNonStdAPI.DeviceConstraints) *margoNonStdAPI.DeviceConstraints {
+	var preferredCap, fallbackCap *margoNonStdAPI.CapacityRequirements
+	if preferred != nil {
+		preferredCap = preferred.CapacityRequirements
+	}
+	if fallback != nil {
+		fallbackCap = fallback.CapacityRequirements
+	}
+
+	selectedCap := t.selectCapacityRequirements(preferredCap, fallbackCap)
+	if selectedCap == nil {
+		return nil
+	}
+
+	return &margoNonStdAPI.DeviceConstraints{
+		CapacityRequirements: selectedCap,
+	}
+}
+
 // MergeWithAppPackage handles profile merging with cleaner logic
 func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDeploymentManifestResp, appPkg ApplicationPackage) error {
 	targetProfile := t.findMatchingProfileInApp(req.Spec.DeploymentProfile.Type, appPkg.Description.DeploymentProfiles)
@@ -704,6 +730,7 @@ func (t *MargoTransformer) mergeHelmProperties(
 			Timeout:    t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
 			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
+		DeviceConstraints: t.selectDeviceConstraints(reqComp.DeviceConstraints, appComp.DeviceConstraints),
 	}
 }
 
@@ -804,5 +831,6 @@ func (t *MargoTransformer) mergeComposeProperties(
 			Timeout:    t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
 			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
+		DeviceConstraints: t.selectDeviceConstraints(reqComp.DeviceConstraints, appComp.DeviceConstraints),
 	}
 }

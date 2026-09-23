@@ -175,6 +175,21 @@ func (self *DeviceAgentVendor) updateDeviceCapabilities(request v1alpha2.COARequ
 		))
 	}
 
+	parsedCapabilitiesBody, marshalErr := json.Marshal(capabilities)
+	if marshalErr != nil {
+		deviceVendorLogger.WarnfCtx(pCtx,
+			"V (MargoDeviceVendor): updateDeviceCapabilities, failed to marshal parsed capabilities for logging: %v",
+			marshalErr)
+	}
+
+	deviceVendorLogger.InfofCtx(pCtx,
+		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, raw_body=%s, parsed_body=%s",
+		deviceId,
+		summarizeDeviceCPUCapabilities(capabilities),
+		string(request.Body),
+		string(parsedCapabilitiesBody),
+	)
+
 	// Call DeviceManager to update capabilities
 	// deviceid is just for residing in properties. For identity, MIAF related identity needs to be used.
 	err = self.DeviceManager.UpdateDeviceCapabilities(pCtx, deviceSpiffeId, capabilities)
@@ -723,4 +738,45 @@ func ExtractPeerSpiffeID(request v1alpha2.COARequest) (string, error) {
 	}
 
 	return clientSpiffeID, nil
+}
+
+func summarizeDeviceCPUCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	cpus := capabilities.Properties.Cpus
+	if cpus == nil || len(*cpus) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(*cpus))
+	for cpuIndex, cpu := range *cpus {
+		architecture := "<nil>"
+		if cpu.Architecture != nil {
+			architecture = string(*cpu.Architecture)
+		}
+
+		cpuClass := "<nil>"
+		if cpu.Class != nil {
+			cpuClass = string(*cpu.Class)
+		}
+
+		cpuType := "<nil>"
+		if cpu.Type != nil {
+			cpuType = string(*cpu.Type)
+		}
+
+		baseMHz := "<nil>"
+		maxMHz := "<nil>"
+		if cpu.Frequency != nil {
+			if cpu.Frequency.BaseMHz != nil {
+				baseMHz = fmt.Sprintf("%g", *cpu.Frequency.BaseMHz)
+			}
+			if cpu.Frequency.MaxMHz != nil {
+				maxMHz = fmt.Sprintf("%g", *cpu.Frequency.MaxMHz)
+			}
+		}
+
+		parts = append(parts, fmt.Sprintf("cpu[%d]={cores=%g, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
+			cpuIndex, cpu.Cores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
+	}
+
+	return strings.Join(parts, "; ")
 }
