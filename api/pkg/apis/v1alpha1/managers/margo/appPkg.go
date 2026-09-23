@@ -502,6 +502,8 @@ func (s *AppPkgManager) processOciRepositoryWithStateTracking(
 		)
 	}
 
+	s.logProfileCPURequirementsOnUpload(ctx, appDesc)
+
 	// Phase 6: Validate application description
 	appPkgLogger.Debug(
 		"Phase 6: Validating application description",
@@ -815,6 +817,68 @@ func (s *AppPkgManager) validateApplicationDescription(
 		"deploymentProfilesCount", len(appDesc.DeploymentProfiles))
 
 	return nil
+}
+
+func (s *AppPkgManager) logProfileCPURequirementsOnUpload(
+	ctx context.Context,
+	appDesc *margoNonStdAPI.AppDescription,
+) {
+	if appDesc == nil {
+		return
+	}
+
+	for profileIdx, profile := range appDesc.DeploymentProfiles {
+		for componentIdx, component := range profile.Components {
+			var componentName string
+			var requiredResources *margoNonStdAPI.RequiredResources
+
+			switch profile.Type {
+			case margoNonStdAPI.AppDeploymentProfileTypeHelm:
+				helmComponent, err := component.AsHelmApplicationDeploymentProfileComponent()
+				if err != nil {
+					appPkgLogger.WarnfCtx(ctx, "Package upload CPU requirements: failed to decode Helm component at index %d: %v", componentIdx, err)
+					continue
+				}
+				componentName = helmComponent.Name
+				requiredResources = helmComponent.RequiredResources
+			case margoNonStdAPI.AppDeploymentProfileTypeCompose:
+				composeComponent, err := component.AsComposeApplicationDeploymentProfileComponent()
+				if err != nil {
+					appPkgLogger.WarnfCtx(ctx, "Package upload CPU requirements: failed to decode Compose component at index %d: %v", componentIdx, err)
+					continue
+				}
+				componentName = composeComponent.Name
+				requiredResources = composeComponent.RequiredResources
+			}
+
+			if requiredResources == nil || requiredResources.Cpu == nil {
+				continue
+			}
+
+			cpuJSON, err := json.Marshal(requiredResources.Cpu)
+			if err != nil {
+				appPkgLogger.WarnfCtx(ctx,
+					"Package upload CPU requirements: failed to marshal requiredResources.cpu for appId=%s profileIndex=%d componentIndex=%d: %v",
+					*appDesc.Id,
+					profileIdx,
+					componentIdx,
+					err,
+				)
+				continue
+			}
+
+			appPkgLogger.InfofCtx(ctx,
+				"Package upload CPU requirements: appId=%s appVersion=%s profileIndex=%d profileType=%s component=%s componentIndex=%d cpu=%s",
+				*appDesc.Id,
+				appDesc.Metadata.Version,
+				profileIdx,
+				profile.Type,
+				componentName,
+				componentIdx,
+				string(cpuJSON),
+			)
+		}
+	}
 }
 
 // storeSymphonyObjects stores the converted Symphony objects in the appropriate systems
