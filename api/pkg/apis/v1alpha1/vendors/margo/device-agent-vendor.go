@@ -175,6 +175,23 @@ func (self *DeviceAgentVendor) updateDeviceCapabilities(request v1alpha2.COARequ
 		))
 	}
 
+	parsedCapabilitiesBody, marshalErr := json.Marshal(capabilities)
+	if marshalErr != nil {
+		deviceVendorLogger.WarnfCtx(pCtx,
+			"V (MargoDeviceVendor): updateDeviceCapabilities, failed to marshal parsed capabilities for logging: %v",
+			marshalErr)
+	}
+
+	deviceVendorLogger.InfofCtx(pCtx,
+		"V (MargoDeviceVendor): updateDeviceCapabilities, device=%s, cpu=%s, cache=%s, memory=%s, raw_body=%s, parsed_body=%s",
+		deviceId,
+		summarizeDeviceCPUCapabilities(capabilities),
+		summarizeDeviceCacheCapabilities(capabilities),
+		summarizeDeviceMemoryCapabilities(capabilities),
+		string(request.Body),
+		string(parsedCapabilitiesBody),
+	)
+
 	// Call DeviceManager to update capabilities
 	// deviceid is just for residing in properties. For identity, MIAF related identity needs to be used.
 	err = self.DeviceManager.UpdateDeviceCapabilities(pCtx, deviceSpiffeId, capabilities)
@@ -723,4 +740,92 @@ func ExtractPeerSpiffeID(request v1alpha2.COARequest) (string, error) {
 	}
 
 	return clientSpiffeID, nil
+}
+
+func summarizeDeviceCPUCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	cpus := capabilities.Properties.Cpus
+	if cpus == nil || len(*cpus) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(*cpus))
+	for cpuIndex, cpu := range *cpus {
+		architecture := "<nil>"
+		if cpu.Architecture != nil {
+			architecture = string(*cpu.Architecture)
+		}
+
+		cpuClass := "<nil>"
+		if cpu.Class != nil {
+			cpuClass = string(*cpu.Class)
+		}
+
+		cpuType := "<nil>"
+		if cpu.Type != nil {
+			cpuType = string(*cpu.Type)
+		}
+
+		baseMHz := "<nil>"
+		maxMHz := "<nil>"
+		if cpu.Frequency != nil {
+			if cpu.Frequency.BaseMHz != nil {
+				baseMHz = fmt.Sprintf("%g", *cpu.Frequency.BaseMHz)
+			}
+			if cpu.Frequency.MaxMHz != nil {
+				maxMHz = fmt.Sprintf("%g", *cpu.Frequency.MaxMHz)
+			}
+		}
+
+		parts = append(parts, fmt.Sprintf("cpu[%d]={cores=%g, class=%s, frequency={baseMHz=%s, maxMHz=%s}, type=%s, architecture=%s}",
+			cpuIndex, cpu.Cores, cpuClass, baseMHz, maxMHz, cpuType, architecture))
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func summarizeDeviceCacheCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	caches := capabilities.Properties.Cache
+	if caches == nil || len(*caches) == 0 {
+		return "none"
+	}
+
+	parts := make([]string, 0, len(*caches))
+	for cacheIndex, cache := range *caches {
+		size := cache.Size
+		if size == "" {
+			size = "<empty>"
+		}
+
+		allocationTypes := "none"
+		if len(cache.AllocationTypes) > 0 {
+			allocations := make([]string, 0, len(cache.AllocationTypes))
+			for _, allocationType := range cache.AllocationTypes {
+				allocations = append(allocations, string(allocationType))
+			}
+			allocationTypes = strings.Join(allocations, "|")
+		}
+
+		parts = append(parts, fmt.Sprintf("cache[%d]={level=%s, allocationTypes=[%s], size=%s}",
+			cacheIndex, cache.Level, allocationTypes, size))
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func summarizeDeviceMemoryCapabilities(capabilities margoStdSbiAPI.DeviceCapabilitiesManifest) string {
+	memory := capabilities.Properties.Memory
+	if memory == nil {
+		return "none"
+	}
+
+	bwTypes := "none"
+	if memory.BandwidthAllocationTypes != nil && len(*memory.BandwidthAllocationTypes) > 0 {
+		parts := make([]string, 0, len(*memory.BandwidthAllocationTypes))
+		for _, bwType := range *memory.BandwidthAllocationTypes {
+			parts = append(parts, string(bwType))
+		}
+		bwTypes = strings.Join(parts, ",")
+	}
+
+	return fmt.Sprintf("memory={size=%s, bandwidthAllocationTypes=%s}", memory.Size, bwTypes)
 }
