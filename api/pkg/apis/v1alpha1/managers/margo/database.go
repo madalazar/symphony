@@ -60,6 +60,14 @@ type AppDeploymentState struct {
 	RawYAML []byte                       `json:"rawYaml,omitempty"` // Exact bytes used to compute digest
 }
 
+// ExclusiveCacheRequested captures per-component exclusive cache reservations
+// made by a deployment so later scheduling can account for already claimed L3.
+type ExclusiveCacheRequested struct {
+	Component string                                         `json:"component"`
+	Level     margoNonStdAPI.DeploymentCacheRequirementLevel `json:"level"`
+	SizeBytes int64                                          `json:"sizeBytes"`
+}
+
 // DeploymentDatabaseRow represents a complete deployment record in the database.
 // It tracks both the deployment request and the current/desired states for device synchronization.
 type DeploymentDatabaseRow struct {
@@ -72,6 +80,16 @@ type DeploymentDatabaseRow struct {
 
 	// DesiredState represents the target state that the deployment should achieve
 	DesiredState AppDeploymentState
+
+	// total number of isolated CPU cores reserved by this deployment
+	// computed at creation time from DeviceConstraints.CapacityRequirements and stored so the resource matcher can
+	// account for in-use capacity without re-parsing the deployment manifest
+	IsolatedCoresRequested float32 `json:"isolatedCoresRequested"`
+
+	// stores per-component exclusive cache reservations for this deployment
+	// these persisted reservations are used by resource matching to account for
+	// already allocated L3 cache capacity
+	ExclusiveCachesRequested []ExclusiveCacheRequested `json:"exclusiveCachesRequested,omitempty"`
 
 	// LastStatusUpdate tracks when this deployment record was last modified
 	LastStatusUpdate time.Time
