@@ -15,7 +15,6 @@ const isolatedCpuEpsilon float32 = 0.0001
 // accounting for active allocations
 // returns the requested core count or error if not enough iso cores are available
 func ValidateRequestedIsoCpuCapacity(
-	deviceID string,
 	device *margoStdAPI.DeviceCapabilitiesManifest,
 	activeAllocations []DeploymentAllocation,
 	profile *margoNonStdAPI.DeploymentExecutionProfile,
@@ -41,8 +40,8 @@ func ValidateRequestedIsoCpuCapacity(
 	remaining := availableIsoCores - currentlyAllocatedIsoCores
 	if remaining+isolatedCpuEpsilon < requestedIsoCores {
 		return requestedIsoCores, fmt.Errorf(
-			"insufficient isolated cpu cores on device %q: needs %.1f, device has %.1f total, %.1f already allocated, %.1f remaining",
-			deviceID, requestedIsoCores, availableIsoCores, currentlyAllocatedIsoCores, remaining,
+			"insufficient isolated cpu cores: needs %.1f, device has %.1f total, %.1f already allocated, %.1f remaining",
+			requestedIsoCores, availableIsoCores, currentlyAllocatedIsoCores, remaining,
 		)
 	}
 

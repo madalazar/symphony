@@ -189,33 +189,60 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 	s.logProfileMemoryRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 	s.logProfileWorkloadRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
 
+	if req.Spec.DeviceRef == nil || req.Spec.DeviceRef.Id == nil || *req.Spec.DeviceRef.Id == "" {
+		return nil, fmt.Errorf("deployment request must specify a deviceRef.id")
+	}
+
+	deviceId := *req.Spec.DeviceRef.Id
+
+	deviceRow, err := s.database.GetDevice(ctx, deviceId)
+	if err != nil {
+		return nil, fmt.Errorf("resource matching: device %q not found: %w", deviceId, err)
+	}
+
+	activeAllocations, err := s.getActiveDeploymentAllocationsByDevice(ctx, deviceId)
+	if err != nil {
+		return nil, fmt.Errorf("resource matching: failed to list active deployments for device %q: %w", deviceId, err)
+	}
+
+	isolatedCoresRequested, err := resources.ValidateRequestedIsoCpuCapacity(
+		deviceRow.Capabilities, activeAllocations, &deployment.Spec.DeploymentProfile)
+	if err != nil {
+		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: cpu resource matching failed for device %s: %v", deviceId, err)
+		return nil, fmt.Errorf("resource matching failed for device %s: %w", deviceId, err)
+	}
+
+	exclusiveCacheBytesRequested, err := resources.ValidateRequestedL3CacheCapacity(
+		deviceRow.Capabilities, activeAllocations, &deployment.Spec.DeploymentProfile)
+	if err != nil {
+		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: cache resource matching failed for device %s: %v", deviceId, err)
+		return nil, err
+	}
+
+	deploymentLogger.InfofCtx(ctx, "CreateDeployment: device %q accepted (isolated cores requested: %.1f)",
+		deviceId, isolatedCoresRequested)
+
 	// Store in database (single call)
-	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
-		return nil, fmt.Errorf("failed to store deployment: %w", err)
+	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version, isolatedCoresRequested, exclusiveCacheBytesRequested); err != nil {
+		return nil, fmt.Errorf("failed to store deployment after device matching for device %s: %w", deviceId, err)
 	}
 
-	// Trigger bundle generation when deployment assigned to device
-	if req.Spec.DeviceRef != nil && req.Spec.DeviceRef.Id != nil {
-		deviceId := *req.Spec.DeviceRef.Id
-		deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
+	// Trigger bundle generation for the target device (deviceId is guaranteed non-empty above).
+	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
+	go func() {
+		// Add delay to ensure database consistency
+		time.Sleep(500 * time.Millisecond)
 
-		go func() {
-			// Add delay to ensure database consistency
-			time.Sleep(500 * time.Millisecond)
-
-			if s.bundleManager != nil {
-				if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
-					deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s: %v", deviceId, err)
-				} else {
-					deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s", deviceId)
-				}
+		if s.bundleManager != nil {
+			if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
+				deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s: %v", deviceId, err)
 			} else {
-				deploymentLogger.ErrorfCtx(context.Background(), "Bundle manager is nil for device %s", deviceId)
+				deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s", deviceId)
 			}
-		}()
-	} else {
-		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: No device reference found in deployment request")
-	}
+		} else {
+			deploymentLogger.ErrorfCtx(context.Background(), "Bundle manager is nil for device %s", deviceId)
+		}
+	}()
 
 	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Successfully created deployment '%s'", *deployment.Id)
 	return deployment, nil
@@ -251,13 +278,15 @@ func (s *DeploymentManager) buildInitialDeployment(req margoNonStdAPI.Applicatio
 }
 
 // storeDeployment handles all database storage operations
-func (s *DeploymentManager) storeDeployment(ctx context.Context, deployment margoNonStdAPI.ApplicationDeploymentManifestResp, deploymentId, appId, appVersion string) error {
+func (s *DeploymentManager) storeDeployment(ctx context.Context, deployment margoNonStdAPI.ApplicationDeploymentManifestResp, deploymentId, appId, appVersion string, isolatedCoresRequested float32, exclusiveCacheBytesRequested int64) error {
 	now := time.Now().UTC()
 
 	// Store deployment record
 	dbRow := DeploymentDatabaseRow{
-		DeploymentRequest: deployment,
-		LastStatusUpdate:  now,
+		DeploymentRequest:              deployment,
+		IsolatedCoresRequested:         isolatedCoresRequested,
+		ExclusiveL3CacheBytesRequested: exclusiveCacheBytesRequested,
+		LastStatusUpdate:               now,
 	}
 
 	if err := s.database.UpsertDeployment(ctx, dbRow, true); err != nil {

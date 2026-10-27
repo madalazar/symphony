@@ -98,7 +98,7 @@ func TestValidateRequestedCpuCapacity_ComponentAndProfileResolution(t *testing.T
 		// Profile requests 8.0 cores (exceeds device's 4.0 isolated), but component requests 2.0 (fits)
 		profile := createTestProfileWithCPU(t, pointers.Ptr(float32(8.0)), pointers.Ptr(float32(2.0)))
 
-		requested, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+		requested, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(2.0), requested)
 	})
@@ -117,7 +117,7 @@ func TestValidateRequestedCpuCapacity_ComponentAndProfileResolution(t *testing.T
 		require.NoError(t, item.FromDeploymentProfileComponent(comp))
 		profile.Components = []margoNonStdAPI.DeploymentExecutionProfile_Components_Item{item}
 
-		requested, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+		requested, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(0), requested)
 	})
@@ -129,7 +129,7 @@ func TestValidateRequestedCpuCapacity_ComponentAndProfileResolution(t *testing.T
 		require.NoError(t, item.FromDeploymentProfileComponent(compWithoutCPU))
 		profile.Components = []margoNonStdAPI.DeploymentExecutionProfile_Components_Item{item}
 
-		requested, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+		requested, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(3.0), requested)
 	})
@@ -152,7 +152,7 @@ func TestValidateRequestedCpuCapacity_ComponentAndProfileResolution(t *testing.T
 			Components: []margoNonStdAPI.DeploymentExecutionProfile_Components_Item{item1, item2},
 		}
 
-		requested, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+		requested, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(4.0), requested)
 	})
@@ -165,7 +165,7 @@ func TestValidateRequestedCpuCapacity_CapacityLimitsAndEpsilon(t *testing.T) {
 
 		// Needs 2.0 cores -> 3.0 allocated + 2.0 = 5.0 > 4.0 -> should fail and still return requested 2.0
 		oversizedProfile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(2.0)))
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, []DeploymentAllocation{existingDep}, &oversizedProfile)
+		req, err := ValidateRequestedIsoCpuCapacity(device, []DeploymentAllocation{existingDep}, &oversizedProfile)
 		require.Error(t, err)
 		assert.Equal(t, float32(2.0), req)
 		assert.Contains(t, err.Error(), "insufficient isolated cpu cores")
@@ -176,7 +176,7 @@ func TestValidateRequestedCpuCapacity_CapacityLimitsAndEpsilon(t *testing.T) {
 		existingDep := createCPUAllocation("existing-dep", 3.0)
 
 		fittingProfile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(1.0)))
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, []DeploymentAllocation{existingDep}, &fittingProfile)
+		req, err := ValidateRequestedIsoCpuCapacity(device, []DeploymentAllocation{existingDep}, &fittingProfile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(1.0), req)
 	})
@@ -191,7 +191,7 @@ func TestValidateRequestedCpuCapacity_CapacityLimitsAndEpsilon(t *testing.T) {
 		}
 
 		profile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(0.1)))
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, allocations, &profile)
+		req, err := ValidateRequestedIsoCpuCapacity(device, allocations, &profile)
 		require.NoError(t, err)
 		assert.InDelta(t, 0.1, req, 1e-6)
 	})
@@ -202,12 +202,12 @@ func TestValidateRequestedCpuCapacity_InactiveDeploymentsAndEdgeCases(t *testing
 		device := createTestDeviceWithCPUs(4.0, 0.0)
 		// Inactive records are filtered by the database caller before passing allocations here.
 		profile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(4.0)))
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+		req, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(4.0), req)
 
 		activeAllocation := createCPUAllocation("active-dep", 4.0)
-		_, err = ValidateRequestedIsoCpuCapacity("test-device-cpu", device, []DeploymentAllocation{activeAllocation}, &profile)
+		_, err = ValidateRequestedIsoCpuCapacity(device, []DeploymentAllocation{activeAllocation}, &profile)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "insufficient isolated cpu cores")
 	})
@@ -217,18 +217,18 @@ func TestValidateRequestedCpuCapacity_InactiveDeploymentsAndEdgeCases(t *testing
 		device := createTestDeviceWithCPUs(4.0, 0.0)
 		emptyProfile := createTestProfileWithCPU(t, nil, nil)
 
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, []DeploymentAllocation{overcommittedDep}, &emptyProfile)
+		req, err := ValidateRequestedIsoCpuCapacity(device, []DeploymentAllocation{overcommittedDep}, &emptyProfile)
 		require.NoError(t, err)
 		assert.Equal(t, float32(0), req)
 
-		req, err = ValidateRequestedIsoCpuCapacity("test-device-cpu", nil, nil, nil)
+		req, err = ValidateRequestedIsoCpuCapacity(nil, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, float32(0), req)
 	})
 
 	t.Run("nil device fails cleanly when isolated cores are requested", func(t *testing.T) {
 		profile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(1.0)))
-		req, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", nil, nil, &profile)
+		req, err := ValidateRequestedIsoCpuCapacity(nil, nil, &profile)
 		require.Error(t, err)
 		assert.Equal(t, float32(1.0), req)
 		assert.Contains(t, err.Error(), "insufficient isolated cpu cores")
@@ -239,21 +239,21 @@ func TestValidateRequestedCpuCapacity_InactiveDeploymentsAndEdgeCases(t *testing
 
 		// Component-level negative core count
 		negativeCompProfile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(-1.0)))
-		_, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &negativeCompProfile)
+		_, err := ValidateRequestedIsoCpuCapacity(device, nil, &negativeCompProfile)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "core count must not be negative")
 
 		// Profile-level negative, NaN, and Inf core counts
 		for _, invalidCores := range []float32{-1.0, float32(math.NaN()), float32(math.Inf(1))} {
 			profile := createTestProfileWithCPU(t, pointers.Ptr(invalidCores), nil)
-			_, err := ValidateRequestedIsoCpuCapacity("test-device-cpu", device, nil, &profile)
+			_, err := ValidateRequestedIsoCpuCapacity(device, nil, &profile)
 			require.Error(t, err)
 		}
 
 		// Negative stored deployment cores
 		badDep := createCPUAllocation("bad-dep", -2.0)
 		validProfile := createTestProfileWithCPU(t, nil, pointers.Ptr(float32(1.0)))
-		_, err = ValidateRequestedIsoCpuCapacity("test-device-cpu", device, []DeploymentAllocation{badDep}, &validProfile)
+		_, err = ValidateRequestedIsoCpuCapacity(device, []DeploymentAllocation{badDep}, &validProfile)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid stored isolatedCoresRequested")
 	})

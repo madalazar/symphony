@@ -541,10 +541,21 @@ func (db *MargoDatabase) GetDeploymentsByDevice(ctx context.Context, deviceId st
 	return deviceDeployments, nil
 }
 
-func isDeploymentActive(dep DeploymentDatabaseRow) bool {
-	state := dep.DesiredState.Status.Status.State
-	return state != margoStdAPI.DeploymentStatusManifestStatusStateFailed &&
-		state != margoStdAPI.DeploymentStatusManifestStatusStateRemoved
+func isDeploymentActive(row DeploymentDatabaseRow) bool {
+	if row.DesiredState.Status.Status.State != margoStdAPI.DeploymentStatusManifestStatusStateInstalled {
+		return false
+	}
+	if row.DeploymentRequest.Status.State == nil {
+		return false
+	}
+	switch *row.DeploymentRequest.Status.State {
+	case margoNonStdAPI.ApplicationDeploymentStatusStatePENDING,
+		margoNonStdAPI.ApplicationDeploymentStatusStateINSTALLING,
+		margoNonStdAPI.ApplicationDeploymentStatusStateINSTALLED:
+		return true
+	default:
+		return false
+	}
 }
 
 func (db *MargoDatabase) GetActiveDeploymentsByDevice(ctx context.Context, deviceId string) ([]DeploymentDatabaseRow, error) {

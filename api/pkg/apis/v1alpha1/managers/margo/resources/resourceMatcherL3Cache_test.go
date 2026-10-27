@@ -88,7 +88,7 @@ func TestHasDeviceCacheCapacityAndSupport_ComponentOverridesProfile(t *testing.T
 	// Profile requests 32MiB (which exceeds device 16MiB), but Component overrides with 8MiB (which fits)
 	dep := createTestDeploymentWithCache(strPtr("32MiB"), strPtr("8MiB"), margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
 
-	exclusiveBytes, err := ValidateRequestedL3CacheCapacity("test-device-1", device, nil, dep)
+	exclusiveBytes, err := ValidateRequestedL3CacheCapacity(device, nil, &dep.Spec.DeploymentProfile)
 	require.NoError(t, err)
 	assert.Equal(t, int64(8*1024*1024), exclusiveBytes)
 }
@@ -102,7 +102,7 @@ func TestHasDeviceCacheCapacityAndSupport_UnsupportedAllocationType(t *testing.T
 	// Deployment requests exclusive cache
 	dep := createTestDeploymentWithCache(nil, strPtr("8MiB"), margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
 
-	_, err := ValidateRequestedL3CacheCapacity("test-device-1", device, nil, dep)
+	_, err := ValidateRequestedL3CacheCapacity(device, nil, &dep.Spec.DeploymentProfile)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "device does not support \"exclusive\" cache allocation on l3")
 }
@@ -120,13 +120,13 @@ func TestHasDeviceCacheCapacityAndSupport_CapacityLimits(t *testing.T) {
 
 	// New deployment asks for 8MiB -> Total would be 18MiB > 16MiB
 	newDep := createTestDeploymentWithCache(nil, strPtr("8MiB"), margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
-	_, err := ValidateRequestedL3CacheCapacity("test-device-1", device, []DeploymentAllocation{existingAlloc}, newDep)
+	_, err := ValidateRequestedL3CacheCapacity(device, []DeploymentAllocation{existingAlloc}, &newDep.Spec.DeploymentProfile)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds available exclusive l3 cache")
 
 	// New deployment asks for 6MiB -> Total is 16MiB <= 16MiB, fits exactly
 	fittingDep := createTestDeploymentWithCache(nil, strPtr("6MiB"), margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
-	exclusiveBytes, err := ValidateRequestedL3CacheCapacity("test-device-1", device, []DeploymentAllocation{existingAlloc}, fittingDep)
+	exclusiveBytes, err := ValidateRequestedL3CacheCapacity(device, []DeploymentAllocation{existingAlloc}, &fittingDep.Spec.DeploymentProfile)
 	require.NoError(t, err)
 	assert.Equal(t, int64(6*1024*1024), exclusiveBytes)
 }
@@ -162,3 +162,43 @@ func TestParseBinarySizeBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestHasDeviceCacheCapacityAndSupport_MissingOrZeroComponentCacheSize(t *testing.T) {
+	device := createTestDeviceWithCache("16MiB", []margoStdAPI.DeviceCapabilitiesManifestPropertiesCacheAllocationTypes{
+		margoStdAPI.DeviceCapabilitiesManifestPropertiesCacheAllocationTypesExclusive,
+	})
+
+	t.Run("component cache requirement with nil size returns error instead of falling back to profile", func(t *testing.T) {
+		dep := createTestDeploymentWithCache(strPtr("8MiB"), nil, margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
+		comp := margoNonStdAPI.DeploymentProfileComponent{
+			Name: "comp-nil-size",
+			DeviceConstraints: &margoNonStdAPI.DeviceConstraints{
+				CapacityRequirements: &margoNonStdAPI.CapacityRequirements{
+					Cache: &[]margoNonStdAPI.DeploymentCacheRequirement{
+						{
+							Level:      margoNonStdAPI.L3,
+							Allocation: margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive,
+							Size:       nil,
+						},
+					},
+				},
+			},
+		}
+		var item margoNonStdAPI.DeploymentExecutionProfile_Components_Item
+		require.NoError(t, item.FromDeploymentProfileComponent(comp))
+		dep.Spec.DeploymentProfile.Components = []margoNonStdAPI.DeploymentExecutionProfile_Components_Item{item}
+
+		_, err := ValidateRequestedL3CacheCapacity(device, nil, &dep.Spec.DeploymentProfile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "missing cache size for component \"comp-nil-size\"")
+	})
+
+	t.Run("component cache requirement with zero size returns error instead of falling back to profile", func(t *testing.T) {
+		dep := createTestDeploymentWithCache(strPtr("8MiB"), strPtr("0MiB"), margoNonStdAPI.DeploymentCacheRequirementAllocationExclusive)
+
+		_, err := ValidateRequestedL3CacheCapacity(device, nil, &dep.Spec.DeploymentProfile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid cache size for component \"comp-1\"")
+	})
+}
+

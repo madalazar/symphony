@@ -58,12 +58,11 @@ var binarySizeUnitMultipliers = []struct {
 // (has sufficient l3 cache capacity), returning the total requested exclusive
 // l3 cache in bytes or an error if not
 func ValidateRequestedL3CacheCapacity(
-	deviceID string,
 	deviceCapabilities *margoStdAPI.DeviceCapabilitiesManifest,
 	activeAllocations []DeploymentAllocation,
-	deployment margoNonStdAPI.ApplicationDeploymentManifestResp,
+	profile *margoNonStdAPI.DeploymentExecutionProfile,
 ) (int64, error) {
-	sharedL3Bytes, exclusiveL3Bytes, err := computeRequestedL3CacheRequirements(deployment)
+	sharedL3Bytes, exclusiveL3Bytes, err := computeRequestedL3CacheRequirements(profile)
 	if err != nil || (sharedL3Bytes == 0 && exclusiveL3Bytes == 0) {
 		return 0, err
 	}
@@ -101,18 +100,20 @@ func ValidateRequestedL3CacheCapacity(
 	return exclusiveL3Bytes, nil
 }
 
-// computes the requested l3 cache (sharedBytes, exclusiveBytes) from a deployment;
+// computes the requested l3 cache (sharedBytes, exclusiveBytes) from a deployment profile;
 // component-level capacity requirements override profile-level requirements:
 // if any component specifies l3 cache requirements, only component requirements
 // are used; otherwise, profile-level requirements are used as a fallback
-func computeRequestedL3CacheRequirements(deployment margoNonStdAPI.ApplicationDeploymentManifestResp) (int64, int64, error) {
-	profile := deployment.Spec.DeploymentProfile
+func computeRequestedL3CacheRequirements(profile *margoNonStdAPI.DeploymentExecutionProfile) (int64, int64, error) {
+	if profile == nil {
+		return 0, 0, nil
+	}
 
 	var totalSharedBytes, totalExclusiveBytes int64
 	for _, component := range profile.Components {
 		depComp, err := component.AsDeploymentProfileComponent()
 		if err != nil {
-			continue
+			return 0, 0, fmt.Errorf("failed to parse deployment profile component: %w", err)
 		}
 		compSharedBytes, compExclusiveBytes, err := processL3CacheRequirements(depComp.Name, depComp.DeviceConstraints)
 		if err != nil {
@@ -139,7 +140,7 @@ func processL3CacheRequirements(componentName string, constraints *margoNonStdAP
 	var sharedBytes, exclusiveBytes int64
 	for _, cacheReq := range *constraints.CapacityRequirements.Cache {
 		if cacheReq.Size == nil {
-			continue
+			return 0, 0, fmt.Errorf("missing cache size for component %q", componentName)
 		}
 		if cacheReq.Level != margoNonStdAPI.L3 {
 			return 0, 0, fmt.Errorf("component %q requests unsupported cache level %q (only l3 is supported)",
