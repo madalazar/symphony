@@ -60,14 +60,6 @@ type AppDeploymentState struct {
 	RawYAML []byte                       `json:"rawYaml,omitempty"` // Exact bytes used to compute digest
 }
 
-// ExclusiveCacheRequested captures per-component exclusive cache reservations
-// made by a deployment so later scheduling can account for already claimed L3.
-type ExclusiveCacheRequested struct {
-	Component string                                         `json:"component"`
-	Level     margoNonStdAPI.DeploymentCacheRequirementLevel `json:"level"`
-	SizeBytes int64                                          `json:"sizeBytes"`
-}
-
 // DeploymentDatabaseRow represents a complete deployment record in the database.
 // It tracks both the deployment request and the current/desired states for device synchronization.
 type DeploymentDatabaseRow struct {
@@ -86,10 +78,10 @@ type DeploymentDatabaseRow struct {
 	// account for in-use capacity without re-parsing the deployment manifest
 	IsolatedCoresRequested float32 `json:"isolatedCoresRequested"`
 
-	// stores per-component exclusive cache reservations for this deployment
-	// these persisted reservations are used by resource matching to account for
-	// already allocated L3 cache capacity
-	ExclusiveCachesRequested []ExclusiveCacheRequested `json:"exclusiveCachesRequested,omitempty"`
+	// total L3 exclusive cache in bytes reserved by this deployment
+	// computed at creation time from DeviceConstraints.CapacityRequirements and stored so the resource matcher can
+	// account for already allocated L3 cache capacity
+	ExclusiveL3CacheBytesRequested int64 `json:"exclusiveL3CacheBytesRequested,omitempty"`
 
 	// LastStatusUpdate tracks when this deployment record was last modified
 	LastStatusUpdate time.Time
@@ -547,6 +539,29 @@ func (db *MargoDatabase) GetDeploymentsByDevice(ctx context.Context, deviceId st
 
 	db.MgrContext.Logger.InfofCtx(ctx, "GetDeploymentsByDevice: Found %d deployments for device '%s'", len(deviceDeployments), deviceId)
 	return deviceDeployments, nil
+}
+
+func isDeploymentActive(dep DeploymentDatabaseRow) bool {
+	state := dep.DesiredState.Status.Status.State
+	return state != margoStdAPI.DeploymentStatusManifestStatusStateFailed &&
+		state != margoStdAPI.DeploymentStatusManifestStatusStateRemoved
+}
+
+func (db *MargoDatabase) GetActiveDeploymentsByDevice(ctx context.Context, deviceId string) ([]DeploymentDatabaseRow, error) {
+	deviceDeployments, err := db.GetDeploymentsByDevice(ctx, deviceId)
+	if err != nil {
+		return nil, err
+	}
+
+	var activeDeployments []DeploymentDatabaseRow
+	for _, dep := range deviceDeployments {
+		if isDeploymentActive(dep) {
+			activeDeployments = append(activeDeployments, dep)
+		}
+	}
+
+	db.MgrContext.Logger.InfofCtx(ctx, "GetActiveDeploymentsByDevice: Found %d active deployments for device '%s'", len(activeDeployments), deviceId)
+	return activeDeployments, nil
 }
 
 func (db *MargoDatabase) GetDeploymentsByPackage(ctx context.Context, packageId string) ([]DeploymentDatabaseRow, error) {

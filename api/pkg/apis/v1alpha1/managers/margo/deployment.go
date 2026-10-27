@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/eclipse-symphony/symphony/api/pkg/apis/v1alpha1/managers/margo/resources"
 	"github.com/eclipse-symphony/symphony/api/pkg/apis/v1alpha1/validation"
 	"github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2"
 	"github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2/contexts"
@@ -148,6 +149,23 @@ func (s *DeploymentManager) deleteObjectFromCache(topic string, event v1alpha2.E
 
 	deploymentLogger.InfofCtx(context.Background(), "deleteObjectFromCache: Successfully removed object from cache")
 	return nil
+}
+
+func (s *DeploymentManager) getActiveDeploymentAllocationsByDevice(ctx context.Context, deviceId string) ([]resources.DeploymentAllocation, error) {
+	activeDeployments, err := s.database.GetActiveDeploymentsByDevice(ctx, deviceId)
+	if err != nil {
+		return nil, err
+	}
+
+	allocations := make([]resources.DeploymentAllocation, 0, len(activeDeployments))
+	for _, dep := range activeDeployments {
+		allocations = append(allocations, resources.DeploymentAllocation{
+			DeploymentID:                   stringPtrToString(dep.DeploymentRequest.Id),
+			IsolatedCoresRequested:         dep.IsolatedCoresRequested,
+			ExclusiveL3CacheBytesRequested: dep.ExclusiveL3CacheBytesRequested,
+		})
+	}
+	return allocations, nil
 }
 
 // CreateDeployment handles the deployment of an application deployment.
