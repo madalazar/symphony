@@ -20,11 +20,8 @@ func ValidateRequestedIsoCpuCapacity(
 	profile *margoNonStdAPI.DeploymentExecutionProfile,
 ) (float32, error) {
 	requestedIsoCores, err := countRequestedIsolatedCores(profile)
-	if err != nil {
+	if err != nil || requestedIsoCores == 0 {
 		return 0, err
-	}
-	if requestedIsoCores == 0 {
-		return 0, nil
 	}
 
 	availableIsoCores, err := countDeviceIsolatedCores(device)
@@ -100,13 +97,27 @@ func countRequestedIsolatedCores(profile *margoNonStdAPI.DeploymentExecutionProf
 		if err != nil {
 			return 0, fmt.Errorf("failed to parse deployment profile component: %w", err)
 		}
-		isolatedCores, err := countCoresByType(depComp.DeviceConstraints, margoNonStdAPI.DeploymentCpuRequirementTypeIsolated)
-		if err != nil {
-			return 0, fmt.Errorf("invalid isolated cpu requirement for component %q: %w", depComp.Name, err)
+		if depComp.DeviceConstraints == nil || depComp.DeviceConstraints.CapacityRequirements == nil || depComp.DeviceConstraints.CapacityRequirements.Cpu == nil {
+			continue
 		}
-		sharedCores, err := countCoresByType(depComp.DeviceConstraints, margoNonStdAPI.DeploymentCpuRequirementTypeShared)
-		if err != nil {
-			return 0, fmt.Errorf("invalid shared cpu requirement for component %q: %w", depComp.Name, err)
+
+		var isolatedCores, sharedCores float32
+		for _, cpu := range *depComp.DeviceConstraints.CapacityRequirements.Cpu {
+			if cpu.Type == nil {
+				continue
+			}
+			switch *cpu.Type {
+			case margoNonStdAPI.DeploymentCpuRequirementTypeIsolated:
+				if err := validateCoreCount(cpu.Cores); err != nil {
+					return 0, fmt.Errorf("invalid isolated cpu requirement for component %q: %w", depComp.Name, err)
+				}
+				isolatedCores += cpu.Cores
+			case margoNonStdAPI.DeploymentCpuRequirementTypeShared:
+				if err := validateCoreCount(cpu.Cores); err != nil {
+					return 0, fmt.Errorf("invalid shared cpu requirement for component %q: %w", depComp.Name, err)
+				}
+				sharedCores += cpu.Cores
+			}
 		}
 		if isolatedCores > 0 || sharedCores > 0 {
 			hasComponentCpu = true
@@ -118,34 +129,22 @@ func countRequestedIsolatedCores(profile *margoNonStdAPI.DeploymentExecutionProf
 		return componentTotal, nil
 	}
 
-	profileTotal, err := countCoresByType(profile.DeviceConstraints, margoNonStdAPI.DeploymentCpuRequirementTypeIsolated)
-	if err != nil {
-		return 0, fmt.Errorf("invalid cpu requirement for profile: %w", err)
-	}
-
-	return profileTotal, nil
-}
-
-// extracts and sums cpu cores of the specified type from a DeviceConstraints block
-func countCoresByType(constraints *margoNonStdAPI.DeviceConstraints,
-	cpuType margoNonStdAPI.DeploymentCpuRequirementType,
-) (float32, error) {
-	if constraints == nil || constraints.CapacityRequirements == nil || constraints.CapacityRequirements.Cpu == nil {
+	if profile.DeviceConstraints == nil || profile.DeviceConstraints.CapacityRequirements == nil || profile.DeviceConstraints.CapacityRequirements.Cpu == nil {
 		return 0, nil
 	}
 
-	var total float32
-	for _, cpu := range *constraints.CapacityRequirements.Cpu {
-		if cpu.Type == nil || *cpu.Type != cpuType {
-			continue
+	var profileTotal float32
+	for _, cpu := range *profile.DeviceConstraints.CapacityRequirements.Cpu {
+		if cpu.Type != nil && *cpu.Type == margoNonStdAPI.DeploymentCpuRequirementTypeIsolated {
+			if err := validateCoreCount(cpu.Cores); err != nil {
+				return 0, fmt.Errorf("invalid cpu requirement for profile: %w", err)
+			}
+			profileTotal += cpu.Cores
+
 		}
-		if err := validateCoreCount(cpu.Cores); err != nil {
-			return 0, err
-		}
-		total += cpu.Cores
 	}
 
-	return total, nil
+	return profileTotal, nil
 }
 
 // validateCoreCount ensures a core count is finite and non-negative.

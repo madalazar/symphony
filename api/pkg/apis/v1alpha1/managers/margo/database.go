@@ -571,7 +571,7 @@ func (db *MargoDatabase) GetActiveDeploymentsByDevice(ctx context.Context, devic
 		}
 	}
 
-	db.MgrContext.Logger.InfofCtx(ctx, "GetActiveDeploymentsByDevice: Found %d active deployments for device '%s'", len(activeDeployments), deviceId)
+	db.MgrContext.Logger.DebugfCtx(ctx, "GetActiveDeploymentsByDevice: Found %d active deployments for device '%s'", len(activeDeployments), deviceId)
 	return activeDeployments, nil
 }
 

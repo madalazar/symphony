@@ -67,7 +67,7 @@ func ValidateRequestedL3CacheCapacity(
 		return 0, err
 	}
 
-	totalL3Bytes, err := validateDeviceL3CacheSupport(deviceCapabilities, sharedL3Bytes, exclusiveL3Bytes)
+	totalL3Bytes, err := computeDeviceL3CacheSize(deviceCapabilities, sharedL3Bytes, exclusiveL3Bytes)
 	if err != nil {
 		return 0, err
 	}
@@ -174,8 +174,8 @@ func processL3CacheRequirements(componentName string, constraints *margoNonStdAP
 	return sharedBytes, exclusiveBytes, nil
 }
 
-func validateDeviceL3CacheSupport(capabilities *margoStdAPI.DeviceCapabilitiesManifest, sharedBytes, exclusiveBytes int64) (int64, error) {
-	if !hasDeviceCacheCapabilities(capabilities) {
+func computeDeviceL3CacheSize(capabilities *margoStdAPI.DeviceCapabilitiesManifest, sharedBytes, exclusiveBytes int64) (int64, error) {
+	if capabilities == nil || capabilities.Properties.Cache == nil {
 		return 0, fmt.Errorf("deployment requests cache but device has no l3 cache capability")
 	}
 
@@ -213,10 +213,6 @@ func validateDeviceL3CacheSupport(capabilities *margoStdAPI.DeviceCapabilitiesMa
 	}
 
 	return totalBytes, nil
-}
-
-func hasDeviceCacheCapabilities(capabilities *margoStdAPI.DeviceCapabilitiesManifest) bool {
-	return capabilities != nil && capabilities.Properties.Cache != nil
 }
 
 func computeAllocatedExclusiveL3Bytes(allocations []DeploymentAllocation) (int64, error) {
