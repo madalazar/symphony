@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/eclipse-symphony/symphony/api/pkg/apis/v1alpha1/managers/margo/resources"
 	"github.com/eclipse-symphony/symphony/api/pkg/apis/v1alpha1/validation"
 	"github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2"
 	"github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2/contexts"
@@ -150,6 +151,23 @@ func (s *DeploymentManager) deleteObjectFromCache(topic string, event v1alpha2.E
 	return nil
 }
 
+func (s *DeploymentManager) getActiveDeploymentAllocationsByDevice(ctx context.Context, deviceId string) ([]resources.DeploymentAllocation, error) {
+	activeDeployments, err := s.database.GetActiveDeploymentsByDevice(ctx, deviceId)
+	if err != nil {
+		return nil, err
+	}
+
+	allocations := make([]resources.DeploymentAllocation, 0, len(activeDeployments))
+	for _, dep := range activeDeployments {
+		allocations = append(allocations, resources.DeploymentAllocation{
+			DeploymentID:                   stringPtrToString(dep.DeploymentRequest.Id),
+			IsolatedCoresRequested:         dep.IsolatedCoresRequested,
+			ExclusiveL3CacheBytesRequested: dep.ExclusiveL3CacheBytesRequested,
+		})
+	}
+	return allocations, nil
+}
+
 // CreateDeployment handles the deployment of an application deployment.
 func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonStdAPI.ApplicationDeploymentManifestRequest, appPkg ApplicationPackage) (*margoNonStdAPI.ApplicationDeploymentManifestResp, error) {
 	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Starting deployment process for '%s'", req.Metadata.Name)
@@ -166,38 +184,57 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 		return nil, fmt.Errorf("failed to process deployment profiles: %w", err)
 	}
 
-	s.logProfileCPURequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
-	s.logProfileCacheRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
-	s.logProfileMemoryRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
-	s.logProfileWorkloadRequirements(ctx, appPkg, deployment.Spec.DeploymentProfile.Type)
+	if req.Spec.DeviceRef == nil || req.Spec.DeviceRef.Id == nil || *req.Spec.DeviceRef.Id == "" {
+		return nil, fmt.Errorf("deployment request must specify a deviceRef.id")
+	}
+
+	deviceId := *req.Spec.DeviceRef.Id
+
+	deviceRow, err := s.database.GetDevice(ctx, deviceId)
+	if err != nil {
+		return nil, fmt.Errorf("resource matching: device %q not found: %w", deviceId, err)
+	}
+
+	activeAllocations, err := s.getActiveDeploymentAllocationsByDevice(ctx, deviceId)
+	if err != nil {
+		return nil, fmt.Errorf("resource matching: failed to list active deployments for device %q: %w", deviceId, err)
+	}
+
+	isolatedCoresRequested, err := resources.ValidateRequestedIsoCpuCapacity(
+		deviceRow.Capabilities, activeAllocations, &deployment.Spec.DeploymentProfile)
+	if err != nil {
+		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: cpu resource matching failed for device %s: %v", deviceId, err)
+		return nil, fmt.Errorf("resource matching failed for device %s: %w", deviceId, err)
+	}
+
+	exclusiveCacheBytesRequested, err := resources.ValidateRequestedL3CacheCapacity(
+		deviceRow.Capabilities, activeAllocations, &deployment.Spec.DeploymentProfile)
+	if err != nil {
+		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: cache resource matching failed for device %s: %v", deviceId, err)
+		return nil, err
+	}
 
 	// Store in database (single call)
-	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version); err != nil {
-		return nil, fmt.Errorf("failed to store deployment: %w", err)
+	if err := s.storeDeployment(ctx, *deployment, *deployment.Id, *appPkg.Description.Id, appPkg.Description.Metadata.Version, isolatedCoresRequested, exclusiveCacheBytesRequested); err != nil {
+		return nil, fmt.Errorf("failed to store deployment after device matching for device %s: %w", deviceId, err)
 	}
 
-	// Trigger bundle generation when deployment assigned to device
-	if req.Spec.DeviceRef != nil && req.Spec.DeviceRef.Id != nil {
-		deviceId := *req.Spec.DeviceRef.Id
-		deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
+	// Trigger bundle generation for the target device (deviceId is guaranteed non-empty above).
+	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
+	go func() {
+		// Add delay to ensure database consistency
+		time.Sleep(500 * time.Millisecond)
 
-		go func() {
-			// Add delay to ensure database consistency
-			time.Sleep(500 * time.Millisecond)
-
-			if s.bundleManager != nil {
-				if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
-					deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s: %v", deviceId, err)
-				} else {
-					deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s", deviceId)
-				}
+		if s.bundleManager != nil {
+			if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
+				deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s: %v", deviceId, err)
 			} else {
-				deploymentLogger.ErrorfCtx(context.Background(), "Bundle manager is nil for device %s", deviceId)
+				deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s", deviceId)
 			}
-		}()
-	} else {
-		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: No device reference found in deployment request")
-	}
+		} else {
+			deploymentLogger.ErrorfCtx(context.Background(), "Bundle manager is nil for device %s", deviceId)
+		}
+	}()
 
 	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Successfully created deployment '%s'", *deployment.Id)
 	return deployment, nil
@@ -233,13 +270,15 @@ func (s *DeploymentManager) buildInitialDeployment(req margoNonStdAPI.Applicatio
 }
 
 // storeDeployment handles all database storage operations
-func (s *DeploymentManager) storeDeployment(ctx context.Context, deployment margoNonStdAPI.ApplicationDeploymentManifestResp, deploymentId, appId, appVersion string) error {
+func (s *DeploymentManager) storeDeployment(ctx context.Context, deployment margoNonStdAPI.ApplicationDeploymentManifestResp, deploymentId, appId, appVersion string, isolatedCoresRequested float32, exclusiveCacheBytesRequested int64) error {
 	now := time.Now().UTC()
 
 	// Store deployment record
 	dbRow := DeploymentDatabaseRow{
-		DeploymentRequest: deployment,
-		LastStatusUpdate:  now,
+		DeploymentRequest:              deployment,
+		IsolatedCoresRequested:         isolatedCoresRequested,
+		ExclusiveL3CacheBytesRequested: exclusiveCacheBytesRequested,
+		LastStatusUpdate:               now,
 	}
 
 	if err := s.database.UpsertDeployment(ctx, dbRow, true); err != nil {
@@ -394,243 +433,6 @@ func (s *DeploymentManager) buildDesiredState(deployment margoNonStdAPI.Applicat
 	}
 
 	return desiredState, nil
-}
-
-// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
-func (s *DeploymentManager) logProfileCPURequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
-	if appPkg.Description == nil {
-		return
-	}
-
-	for _, profile := range appPkg.Description.DeploymentProfiles {
-		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
-			continue
-		}
-		for componentIndex, component := range profile.Components {
-			appComponent, err := component.AsApplicationDeploymentProfileComponent()
-			if err != nil {
-				deploymentLogger.WarnfCtx(ctx, "CreateDeployment CPU scaffolding: failed to decode component at index %d: %v", componentIndex, err)
-				continue
-			}
-
-			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Cpu == nil {
-				continue
-			}
-
-			for cpuIndex, cpu := range *appComponent.DeviceConstraints.CapacityRequirements.Cpu {
-				deploymentLogger.InfofCtx(ctx,
-					"CreateDeployment CPU scaffolding (component): profileType=%s componentIndex=%d component=%s cpuIndex=%d cores=%v class=%s type=%s",
-					profileType,
-					componentIndex,
-					appComponent.Name,
-					cpuIndex,
-					cpu.Cores,
-					cpuClassPtrToString(cpu.Class),
-					cpuTypePtrToString(cpu.Type),
-				)
-			}
-		}
-		return
-	}
-}
-
-// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
-func (s *DeploymentManager) logProfileCacheRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
-	if appPkg.Description == nil {
-		return
-	}
-
-	for _, profile := range appPkg.Description.DeploymentProfiles {
-		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
-			continue
-		}
-		for componentIndex, component := range profile.Components {
-			appComponent, err := component.AsApplicationDeploymentProfileComponent()
-			if err != nil {
-				deploymentLogger.WarnfCtx(ctx, "CreateDeployment cache scaffolding: failed to decode component at index %d: %v", componentIndex, err)
-				continue
-			}
-
-			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Cache == nil {
-				continue
-			}
-
-			for cacheIndex, cache := range *appComponent.DeviceConstraints.CapacityRequirements.Cache {
-				deploymentLogger.InfofCtx(ctx,
-					"CreateDeployment cache scaffolding (component): profileType=%s componentIndex=%d component=%s cacheIndex=%d level=%s allocation=%s size=%s",
-					profileType,
-					componentIndex,
-					appComponent.Name,
-					cacheIndex,
-					cache.Level,
-					cache.Allocation,
-					stringPtrToString(cache.Size),
-				)
-			}
-		}
-		return
-	}
-}
-
-// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
-func (s *DeploymentManager) logProfileMemoryRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
-	if appPkg.Description == nil {
-		return
-	}
-
-	for _, profile := range appPkg.Description.DeploymentProfiles {
-		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
-			continue
-		}
-
-		for componentIndex, component := range profile.Components {
-			appComponent, err := component.AsApplicationDeploymentProfileComponent()
-			if err != nil {
-				deploymentLogger.WarnfCtx(ctx, "CreateDeployment memory scaffolding: failed to decode component at index %d: %v", componentIndex, err)
-				continue
-			}
-
-			if appComponent.DeviceConstraints == nil || appComponent.DeviceConstraints.CapacityRequirements == nil || appComponent.DeviceConstraints.CapacityRequirements.Memory == nil {
-				continue
-			}
-
-			memoryJSON, err := json.Marshal(appComponent.DeviceConstraints.CapacityRequirements.Memory)
-			if err != nil {
-				deploymentLogger.WarnfCtx(ctx,
-					"CreateDeployment memory scaffolding: failed to marshal capacityRequirements.memory for profileType=%s componentIndex=%d: %v",
-					profileType,
-					componentIndex,
-					err,
-				)
-				continue
-			}
-
-			deploymentLogger.InfofCtx(ctx,
-				"CreateDeployment memory scaffolding (component): profileType=%s componentIndex=%d component=%s memory=%s",
-				profileType,
-				componentIndex,
-				appComponent.Name,
-				string(memoryJSON),
-			)
-		}
-		return
-	}
-}
-
-// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
-func (s *DeploymentManager) logProfileWorkloadRequirements(ctx context.Context, appPkg ApplicationPackage, profileType margoNonStdAPI.DeploymentExecutionProfileType) {
-	if appPkg.Description == nil {
-		return
-	}
-
-	for _, profile := range appPkg.Description.DeploymentProfiles {
-		if profile.Type != margoNonStdAPI.AppDeploymentProfileType(profileType) {
-			continue
-		}
-
-		for compIdx, component := range profile.Components {
-			appComponent, err := component.AsApplicationDeploymentProfileComponent()
-			if err != nil {
-				deploymentLogger.WarnfCtx(ctx,
-					"CreateDeployment workload scaffolding: failed to decode component at index=%d for profileType=%s expectedProfileType=%s",
-					compIdx, profileType, profile.Type,
-				)
-				continue
-			}
-
-			switch profile.Type {
-			case margoNonStdAPI.AppDeploymentProfileTypeCompose:
-				deploymentLogger.InfofCtx(ctx,
-					"[COMPOSE]CreateDeployment workload scaffolding: profileType=%s component=%s",
-					profileType, appComponent.Name,
-				)
-				s.logComponentWorkload(ctx, profileType, "compose", compIdx, appComponent.Name, appComponent.Workload)
-			case margoNonStdAPI.AppDeploymentProfileTypeHelm:
-				deploymentLogger.InfofCtx(ctx,
-					"[HELM]CreateDeployment workload scaffolding: profileType=%s component=%s",
-					profileType, appComponent.Name,
-				)
-				s.logComponentWorkload(ctx, profileType, "helm", compIdx, appComponent.Name, appComponent.Workload)
-			default:
-				s.logComponentWorkload(ctx, profileType, string(profileType), compIdx, appComponent.Name, appComponent.Workload)
-			}
-		}
-		return
-	}
-}
-
-// TODO: method to help log/debug rt data model changes. it can be removed after PR is approved
-func (s *DeploymentManager) logComponentWorkload(
-	ctx context.Context,
-	profileType margoNonStdAPI.DeploymentExecutionProfileType,
-	componentKind string,
-	componentIndex int,
-	componentName string,
-	workload *margoNonStdAPI.Workload,
-) {
-	if workload == nil {
-		deploymentLogger.InfofCtx(ctx,
-			"CreateDeployment workload scaffolding (component): profileType=%s kind=%s componentIndex=%d componentName=%s hasWorkload=false",
-			profileType, componentKind, componentIndex, componentName,
-		)
-		return
-	}
-
-	scheduling := ""
-	if workload.Scheduling != nil {
-		scheduling = string(*workload.Scheduling)
-	}
-	priority := ""
-	if workload.Priority != nil {
-		priority = fmt.Sprintf("%d", *workload.Priority)
-	}
-	nice := ""
-	if workload.Nice != nil {
-		nice = fmt.Sprintf("%d", *workload.Nice)
-	}
-
-	deploymentLogger.InfofCtx(ctx,
-		"CreateDeployment workload scaffolding (component): profileType=%s kind=%s componentIndex=%d componentName=%s scheduling=%s priority=%s nice=%s",
-		profileType, componentKind, componentIndex, componentName, scheduling, priority, nice,
-	)
-
-	if workload.Deadline != nil {
-		deadline, period, runtime := "", "", ""
-		if workload.Deadline.Deadline != nil {
-			deadline = fmt.Sprintf("%d", *workload.Deadline.Deadline)
-		}
-		if workload.Deadline.Period != nil {
-			period = fmt.Sprintf("%d", *workload.Deadline.Period)
-		}
-		if workload.Deadline.Runtime != nil {
-			runtime = fmt.Sprintf("%d", *workload.Deadline.Runtime)
-		}
-		deploymentLogger.InfofCtx(ctx,
-			"CreateDeployment workload scaffolding (component deadline): profileType=%s kind=%s componentIndex=%d componentName=%s deadline=%s period=%s runtime=%s",
-			profileType, componentKind, componentIndex, componentName, deadline, period, runtime,
-		)
-	}
-}
-
-func float32PtrToString(value *float32) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprintf("%v", *value)
-}
-
-func cpuClassPtrToString(value *margoNonStdAPI.DeploymentCpuRequirementClass) string {
-	if value == nil {
-		return ""
-	}
-	return string(*value)
-}
-
-func cpuTypePtrToString(value *margoNonStdAPI.DeploymentCpuRequirementType) string {
-	if value == nil {
-		return ""
-	}
-	return string(*value)
 }
 
 func stringPtrToString(value *string) string {
