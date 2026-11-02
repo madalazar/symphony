@@ -211,7 +211,7 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 		deviceRow.Capabilities, activeAllocations, &deployment.Spec.DeploymentProfile)
 	if err != nil {
 		deploymentLogger.WarnfCtx(ctx, "CreateDeployment: cache resource matching failed for device %s: %v", deviceId, err)
-		return nil, err
+		return nil, fmt.Errorf("resource matching failed for device %s: %w", deviceId, err)
 	}
 
 	// Store in database (single call)
@@ -220,21 +220,19 @@ func (s *DeploymentManager) CreateDeployment(ctx context.Context, req margoNonSt
 	}
 
 	// Trigger bundle generation for the target device (deviceId is guaranteed non-empty above).
-	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
-	go func() {
-		// Add delay to ensure database consistency
-		time.Sleep(500 * time.Millisecond)
+	if s.bundleManager != nil {
+		deploymentLogger.InfofCtx(ctx, "CreateDeployment: Triggering bundle generation for device %s", deviceId)
+		go func() {
+			// Add delay to ensure database consistency
+			time.Sleep(500 * time.Millisecond)
 
-		if s.bundleManager != nil {
 			if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
 				deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s: %v", deviceId, err)
 			} else {
 				deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s", deviceId)
 			}
-		} else {
-			deploymentLogger.ErrorfCtx(context.Background(), "Bundle manager is nil for device %s", deviceId)
-		}
-	}()
+		}()
+	}
 
 	deploymentLogger.InfofCtx(ctx, "CreateDeployment: Successfully created deployment '%s'", *deployment.Id)
 	return deployment, nil
@@ -335,19 +333,17 @@ func (s *DeploymentManager) DeleteDeployment(ctx context.Context, deploymentId s
 	deploymentLogger.InfofCtx(ctx, "DeleteDeployment: Transitioned deployment '%s' to REMOVING state", deploymentId)
 
 	// Trigger bundle regeneration if deployment was assigned to a device
-	if deviceId != "" {
+	if deviceId != "" && s.bundleManager != nil {
 		deploymentLogger.InfofCtx(ctx, "DeleteDeployment: Triggering bundle regeneration for device %s after deletion", deviceId)
 
 		go func() {
 			// Add delay to ensure state machine update is persisted
 			time.Sleep(500 * time.Millisecond)
 
-			if s.bundleManager != nil {
-				if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
-					deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s after deletion: %v", deviceId, err)
-				} else {
-					deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s after deletion", deviceId)
-				}
+			if err := s.bundleManager.rebuildTheBundleForDevice(context.Background(), deviceId); err != nil {
+				deploymentLogger.ErrorfCtx(context.Background(), "Failed to rebuild bundle for device %s after deletion: %v", deviceId, err)
+			} else {
+				deploymentLogger.InfofCtx(context.Background(), "Successfully rebuilt bundle for device %s after deletion", deviceId)
 			}
 		}()
 	}

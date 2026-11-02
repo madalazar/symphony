@@ -6,6 +6,8 @@ replace github.com/eclipse-symphony/symphony/coa => ../coa
 
 replace github.com/eclipse-symphony/symphony/packages/mage => ../packages/mage
 
+replace github.com/margo/sandbox => ../../sandbox
+
 require (
 	github.com/eclipse-symphony/symphony/coa v0.0.0
 	github.com/spf13/cobra v1.10.2
@@ -230,5 +232,3 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
 )
-
-replace github.com/margo/sandbox => ../../sandbox

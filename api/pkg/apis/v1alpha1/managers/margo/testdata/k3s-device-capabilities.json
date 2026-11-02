@@ -1,0 +1,65 @@
+{
+  "properties": {
+    "id": "northstarida.xtapro.k8s.edge",
+    "vendor": "Northstar Industrial Devices",
+    "modelNumber": "332ANZE1-N1",
+    "serialNumber": "PF45343-AA",
+    "cpus": [
+      {
+        "cores": 2,
+        "class": "performance",
+        "type": "isolated",
+        "architecture": "amd64"
+      },
+      {
+        "cores": 42,
+        "class": "performance",
+        "type": "shared",
+        "architecture": "amd64"
+      }
+    ],
+    "memory": {
+      "size": "59Gi"
+    },
+    "storage": "1862Gi",
+    "peripherals": [
+      {
+        "type": "gpu",
+        "manufacturer": "NVIDIA"
+      }
+    ],
+    "interfaces": [
+      {
+        "type": "ethernet"
+      },
+      {
+        "type": "wifi"
+      }
+    ],
+    "otelCollector": true,
+    "supportedRuntimes": [
+      "oci"
+    ],
+    "supportedDeploymentTypes": [
+      "helm"
+    ],
+      "cache": [
+      {
+        "level": "L3",
+        "size": "30976Ki",
+        "allocationTypes": [
+          "exclusive",
+          "shared"
+        ]
+      },
+      {
+        "level": "L3",
+        "size": "30976Ki",
+        "allocationTypes": [
+          "exclusive",
+          "shared"
+        ]
+      }
+    ]
+  }
+}

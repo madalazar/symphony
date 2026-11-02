@@ -2,17 +2,13 @@ package margo
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"testing"
 
 	powerfulYaml "github.com/ghodss/yaml"
-	coa_ctx "github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2/contexts"
-	"github.com/eclipse-symphony/symphony/coa/pkg/apis/v1alpha2/providers/states/memorystate"
 	margoNonStdAPI "github.com/margo/sandbox/non-standard/generatedCode/wfm/nbi"
 	"github.com/margo/sandbox/shared-lib/archive"
-	p "github.com/margo/sandbox/shared-lib/pointers"
 	"github.com/margo/sandbox/standard/generatedCode/wfm/sbi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,64 +18,19 @@ func TestBundleSerializationAndExtraction(t *testing.T) {
 	appPkg := setupTestAppPackage(t)
 	ctx := context.Background()
 
-	stateProvider := &memorystate.MemoryStateProvider{}
-	err := stateProvider.Init(memorystate.MemoryStateProviderConfig{})
-	require.NoError(t, err)
-
-	vContext := &coa_ctx.VendorContext{}
-	err = vContext.Init(nil)
-	require.NoError(t, err)
-
-	mContext := &coa_ctx.ManagerContext{}
-	err = mContext.Init(vContext, nil)
-	require.NoError(t, err)
-
-	db := NewMargoDatabase(mContext, "bundle-test", stateProvider)
-	stateMachine := NewDeploymentStateMachine(db, deploymentLogger)
-	transformer := NewMargoTransformer()
-
-	bundleMgr := &DeploymentBundleManager{
-		Database:      db,
-		StateProvider: stateProvider,
-	}
-
-	// Set bundleManager to nil on deployMgr to avoid asynchronous background generation clashing
-	deployMgr := &DeploymentManager{
-		database:      db,
-		stateMachine:  stateMachine,
-		tranformer:    transformer,
-		bundleManager: nil,
-	}
+	deployMgr, bundleMgr, db := setupTestMargoEnvironment(t, "bundle-test")
 
 	deviceId := "helm-device-bundle-01"
+	helmDev := buildEligibilityDevice(deviceId, sbi.DeviceCapabilitiesManifestPropertiesSupportedDeploymentTypesHelm)
+	require.NoError(t, db.UpsertDevice(ctx, DeviceDatabaseRow{
+		DeviceClientId:   deviceId,
+		DeviceId:         deviceId,
+		OnboardingStatus: margoNonStdAPI.DeviceOnboardStatusONBOARDED,
+		Capabilities:     helmDev,
+	}))
 
-	helmReq := margoNonStdAPI.ApplicationDeploymentManifestRequest{}
-	helmReq.Metadata.Name = "rt-bundle-helm-deploy"
-	helmReq.Spec = margoNonStdAPI.ApplicationDeploymentSpec{
-		AppPackageRef: struct {
-			Id string `json:"id"`
-		}{
-			Id: "rt-benchmark-experiment-suite",
-		},
-		DeviceRef: &margoNonStdAPI.ApplicationDeploymentSpec_DeviceRef{
-			Id: p.Ptr(deviceId),
-		},
-		DeploymentProfile: margoNonStdAPI.DeploymentExecutionProfile{
-			Type: margoNonStdAPI.DeploymentExecutionProfileType("helm"),
-			Components: []margoNonStdAPI.DeploymentExecutionProfile_Components_Item{
-				{}, // caterpillar
-				{}, // cyclictest
-				{}, // stressng
-			},
-		},
-	}
-
-	catComp := margoNonStdAPI.DeploymentProfileComponent{Name: "caterpillar"}
-	require.NoError(t, helmReq.Spec.DeploymentProfile.Components[0].FromDeploymentProfileComponent(catComp))
-	cyclicComp := margoNonStdAPI.DeploymentProfileComponent{Name: "cyclictest"}
-	require.NoError(t, helmReq.Spec.DeploymentProfile.Components[1].FromDeploymentProfileComponent(cyclicComp))
-	stressComp := margoNonStdAPI.DeploymentProfileComponent{Name: "stressng"}
-	require.NoError(t, helmReq.Spec.DeploymentProfile.Components[2].FromDeploymentProfileComponent(stressComp))
+	helmReq, err := buildDeploymentRequestForDevice("rt-bundle-helm-deploy", appPkg, helmDev)
+	require.NoError(t, err)
 
 	createdDeployment, err := deployMgr.CreateDeployment(ctx, helmReq, appPkg)
 	require.NoError(t, err)
@@ -108,13 +59,11 @@ func TestBundleSerializationAndExtraction(t *testing.T) {
 	bundleBytes, err := os.ReadFile(bundleRow.ArchivePath)
 	require.NoError(t, err)
 
-	// Verify SHA256 matches
-	hash := sha256.Sum256(bundleBytes)
-	actualDigest := fmt.Sprintf("sha256:%x", hash)
-	assert.Equal(t, expectedDigest, actualDigest, "bundle archive SHA256 digest must match manifest digest")
-
-	// Extract using Sandbox's archive.NewExtractor
+	// Extract and verify digest using Sandbox's archive.NewExtractor
 	extractor := archive.NewExtractor(bundleBytes)
+	require.NoError(t, extractor.VerifyBundleDigest(expectedDigest),
+		"bundle archive SHA256 digest must match manifest digest via archive.Extractor.VerifyBundleDigest")
+
 	entries, err := extractor.Extract()
 	require.NoError(t, err, "archive.NewExtractor must unpack .tar.gz without error")
 	require.NotEmpty(t, entries)
@@ -134,11 +83,13 @@ func TestBundleSerializationAndExtraction(t *testing.T) {
 	assert.Equal(t, "rt-bundle-helm-deploy", sandboxDeployment.Metadata.Name)
 	assert.Equal(t, sbi.DeviceIdWithAsterisk(deviceId), sandboxDeployment.Metadata.DeviceId)
 
-	// Verify profile-level memory struct
+	// Verify profile-level memory & storage constraints
 	require.NotNil(t, sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints)
 	require.NotNil(t, sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints.CapacityRequirements)
 	require.NotNil(t, sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints.CapacityRequirements.Memory)
 	assert.Equal(t, "1024Mi", sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints.CapacityRequirements.Memory.Size)
+	require.NotNil(t, sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints.CapacityRequirements.Storage)
+	assert.Equal(t, "2Gi", *sandboxDeployment.Spec.DeploymentProfile.DeviceConstraints.CapacityRequirements.Storage)
 
 	// Find all 3 components
 	var extractedCat, extractedCyclic, extractedStress *sbi.ApplicationDeploymentProfileComponent
@@ -172,12 +123,19 @@ func TestBundleSerializationAndExtraction(t *testing.T) {
 	require.NotNil(t, catCache.Size)
 	assert.Equal(t, "9216Ki", *catCache.Size)
 
+	// Verify caterpillar eligibilityRules survived into the bundle
+	require.NotNil(t, extractedCat.DeviceConstraints.EligibilityRules, "caterpillar eligibilityRules must survive into extracted bundle")
+	require.Len(t, *extractedCat.DeviceConstraints.EligibilityRules, 1)
+	require.NotNil(t, (*extractedCat.DeviceConstraints.EligibilityRules)[0].PropertySelector)
+	assert.Len(t, (*extractedCat.DeviceConstraints.EligibilityRules)[0].PropertySelector.MatchExpressions, 2)
+
 	require.NotNil(t, extractedCyclic, "cyclictest component must exist in extracted manifest")
 	require.NotNil(t, extractedCyclic.DeviceConstraints)
 	require.NotNil(t, extractedCyclic.DeviceConstraints.CapacityRequirements)
 	require.NotNil(t, extractedCyclic.DeviceConstraints.CapacityRequirements.Cpu)
 	require.Len(t, *extractedCyclic.DeviceConstraints.CapacityRequirements.Cpu, 1)
 	assert.Equal(t, float32(1), (*extractedCyclic.DeviceConstraints.CapacityRequirements.Cpu)[0].Cores)
+	require.NotNil(t, extractedCyclic.DeviceConstraints.EligibilityRules, "cyclictest eligibilityRules must survive into extracted bundle")
 
 	require.NotNil(t, extractedCyclic.Workload)
 	require.NotNil(t, extractedCyclic.Workload.Scheduling)
@@ -196,4 +154,6 @@ func TestBundleSerializationAndExtraction(t *testing.T) {
 
 	require.NotNil(t, extractedStress, "stressng component must exist in extracted manifest")
 	assert.Equal(t, "oci://harbor.machine:8443/library/stressng", extractedStress.Properties.Repository)
+	assert.Nil(t, extractedStress.DeviceConstraints, "stressng component should not have deviceConstraints")
+	assert.Nil(t, extractedStress.Workload, "stressng component should not have RT workload")
 }
