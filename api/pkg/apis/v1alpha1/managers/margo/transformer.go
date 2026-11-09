@@ -557,22 +557,36 @@ func (t *MargoTransformer) selectCapacityRequirements(preferred, fallback *margo
 	return fallback
 }
 
+func (t *MargoTransformer) selectEligibilityRules(preferred, fallback *[]margoNonStdAPI.EligibilityRule) *[]margoNonStdAPI.EligibilityRule {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
+}
+
 func (t *MargoTransformer) selectDeviceConstraints(preferred, fallback *margoNonStdAPI.DeviceConstraints) *margoNonStdAPI.DeviceConstraints {
 	var preferredCap, fallbackCap *margoNonStdAPI.CapacityRequirements
+	var preferredRules, fallbackRules *[]margoNonStdAPI.EligibilityRule
+
 	if preferred != nil {
 		preferredCap = preferred.CapacityRequirements
+		preferredRules = preferred.EligibilityRules
 	}
 	if fallback != nil {
 		fallbackCap = fallback.CapacityRequirements
+		fallbackRules = fallback.EligibilityRules
 	}
 
 	selectedCap := t.selectCapacityRequirements(preferredCap, fallbackCap)
-	if selectedCap == nil {
+	selectedRules := t.selectEligibilityRules(preferredRules, fallbackRules)
+
+	if selectedCap == nil && selectedRules == nil {
 		return nil
 	}
 
 	return &margoNonStdAPI.DeviceConstraints{
 		CapacityRequirements: selectedCap,
+		EligibilityRules:     selectedRules,
 	}
 }
 
