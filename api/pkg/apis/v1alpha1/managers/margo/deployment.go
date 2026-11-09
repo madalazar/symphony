@@ -464,7 +464,7 @@ func (s *DeploymentManager) logProfileCacheRequirements(ctx context.Context, app
 					cacheIndex,
 					cache.Level,
 					cache.Allocation,
-					stringPtrToString(cache.Size),
+					cache.Size,
 				)
 			}
 		}
