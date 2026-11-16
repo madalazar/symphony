@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// extractComponentCapacityRequirements helper matching sandbox/poc/device/agent/deployment.go
+func extractComponentCapacityRequirements(
+	component sbi.ApplicationDeploymentProfileComponent,
+) *sbi.CapacityRequirements {
+	if component.DeviceConstraints != nil && component.DeviceConstraints.CapacityRequirements != nil {
+		return component.DeviceConstraints.CapacityRequirements
+	}
+	return nil
+}
+
 func TestDeviceEligibility_HelmAndCompose(t *testing.T) {
 	appPkg := setupTestAppPackage(t)
 	ctx := context.Background()
@@ -101,11 +111,11 @@ func TestDeviceEligibility_HelmAndCompose(t *testing.T) {
 		assert.NotEmpty(t, reason, "ineligibility reason should be populated")
 	})
 
-	// --- Component Constraint Extraction Validation (using shared-lib constraints.ExtractComponentCapacityRequirements) ---
+	// --- Component Constraint Extraction Validation (matching sandbox/poc/device/agent/deployment.go extractComponentCapacityRequirements) ---
 
 	t.Run("2.6.E Component Capacity Extraction (Helm Caterpillar & Cyclictest)", func(t *testing.T) {
 		catComp := helmDeploymentManifest.Spec.DeploymentProfile.Components[0]
-		catCaps := constraints.ExtractComponentCapacityRequirements(catComp)
+		catCaps := extractComponentCapacityRequirements(catComp)
 		require.NotNil(t, catCaps, "caterpillar capacity requirements must be extracted")
 		require.NotNil(t, catCaps.Cpu)
 		require.Len(t, *catCaps.Cpu, 1)
@@ -119,7 +129,7 @@ func TestDeviceEligibility_HelmAndCompose(t *testing.T) {
 		assert.Equal(t, "9216Ki", *(*catCaps.Cache)[0].Size)
 
 		cyclicComp := helmDeploymentManifest.Spec.DeploymentProfile.Components[1]
-		cyclicCaps := constraints.ExtractComponentCapacityRequirements(cyclicComp)
+		cyclicCaps := extractComponentCapacityRequirements(cyclicComp)
 		require.NotNil(t, cyclicCaps, "cyclictest capacity requirements must be extracted")
 		require.NotNil(t, cyclicCaps.Cpu)
 		require.Len(t, *cyclicCaps.Cpu, 1)
@@ -138,7 +148,7 @@ func TestDeviceEligibility_HelmAndCompose(t *testing.T) {
 		assert.Equal(t, 5, *cyclicComp.Workload.Deadline.Runtime)
 
 		catComp := composeDeploymentManifest.Spec.DeploymentProfile.Components[2]
-		catCaps := constraints.ExtractComponentCapacityRequirements(catComp)
+		catCaps := extractComponentCapacityRequirements(catComp)
 		require.NotNil(t, catCaps, "caterpillar_compose capacity requirements must be extracted")
 		require.NotNil(t, catCaps.Cache)
 		assert.Equal(t, sbi.DeploymentCacheRequirementLevelL3, (*catCaps.Cache)[0].Level)
