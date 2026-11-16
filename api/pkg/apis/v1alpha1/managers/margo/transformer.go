@@ -521,6 +521,13 @@ func (t *MargoTransformer) convertComponent(comp margoNonStdAPI.DeploymentExecut
 	return sbiComp
 }
 
+func coalescePtr[T any](preferred, fallback *T) *T {
+	if preferred != nil {
+		return preferred
+	}
+	return fallback
+}
+
 // Helper functions for clean property selection
 func (t *MargoTransformer) selectString(preferred, fallback string) string {
 	if preferred != "" {
@@ -529,50 +536,47 @@ func (t *MargoTransformer) selectString(preferred, fallback string) string {
 	return fallback
 }
 
-func (t *MargoTransformer) selectStringPtr(preferred, fallback *string) *string {
-	if preferred != nil {
-		return preferred
-	}
-	return fallback
-}
-
-func (t *MargoTransformer) selectIntPtr(preferred, fallback *int) *int {
-	if preferred != nil {
-		return preferred
-	}
-	return fallback
-}
-
-func (t *MargoTransformer) selectBoolPtr(preferred, fallback *bool) *bool {
-	if preferred != nil {
-		return preferred
-	}
-	return fallback
-}
-
 func (t *MargoTransformer) selectCapacityRequirements(preferred, fallback *margoNonStdAPI.CapacityRequirements) *margoNonStdAPI.CapacityRequirements {
-	if preferred != nil {
+	if preferred == nil {
+		return fallback
+	}
+	if fallback == nil {
 		return preferred
 	}
-	return fallback
+
+	merged := &margoNonStdAPI.CapacityRequirements{
+		Cpu:     coalescePtr(preferred.Cpu, fallback.Cpu),
+		Cache:   coalescePtr(preferred.Cache, fallback.Cache),
+		Memory:  coalescePtr(preferred.Memory, fallback.Memory),
+		Storage: coalescePtr(preferred.Storage, fallback.Storage),
+	}
+	if merged.Cpu == nil && merged.Cache == nil && merged.Memory == nil && merged.Storage == nil {
+		return nil
+	}
+	return merged
 }
 
 func (t *MargoTransformer) selectDeviceConstraints(preferred, fallback *margoNonStdAPI.DeviceConstraints) *margoNonStdAPI.DeviceConstraints {
 	var preferredCap, fallbackCap *margoNonStdAPI.CapacityRequirements
+	var preferredRules, fallbackRules *[]margoNonStdAPI.EligibilityRule
 	if preferred != nil {
 		preferredCap = preferred.CapacityRequirements
+		preferredRules = preferred.EligibilityRules
 	}
 	if fallback != nil {
 		fallbackCap = fallback.CapacityRequirements
+		fallbackRules = fallback.EligibilityRules
 	}
 
 	selectedCap := t.selectCapacityRequirements(preferredCap, fallbackCap)
-	if selectedCap == nil {
+	selectedRules := coalescePtr(preferredRules, fallbackRules)
+	if selectedCap == nil && selectedRules == nil {
 		return nil
 	}
 
 	return &margoNonStdAPI.DeviceConstraints{
 		CapacityRequirements: selectedCap,
+		EligibilityRules:     selectedRules,
 	}
 }
 
@@ -584,9 +588,10 @@ func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDe
 	}
 
 	// as device constraints are not a required field
-	if targetProfile.DeviceConstraints != nil {
-		req.Spec.DeploymentProfile.DeviceConstraints = targetProfile.DeviceConstraints
-	}
+	req.Spec.DeploymentProfile.DeviceConstraints = t.selectDeviceConstraints(
+		req.Spec.DeploymentProfile.DeviceConstraints,
+		targetProfile.DeviceConstraints,
+	)
 
 	appComponents := t.buildComponentMap(*targetProfile)
 
@@ -597,11 +602,13 @@ func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDe
 		}
 	}
 
-	appPkgParams := margoNonStdAPI.AppDescriptionParametersMap{}
+	appPkgParams := make(margoNonStdAPI.AppDescriptionParametersMap)
 	if appPkg.Description.Parameters != nil {
-		appPkgParams = *appPkg.Description.Parameters
+		for k, v := range *appPkg.Description.Parameters {
+			appPkgParams[k] = v
+		}
 	}
-	if err := t.mergeParameters(req.Spec.Parameters, appPkgParams); err != nil {
+	if err := t.mergeParameters(&req.Spec.Parameters, appPkgParams, appComponents); err != nil {
 		deploymentLogger.Warn("Failed to merge parameters", "error", err)
 		return err
 	}
@@ -609,38 +616,87 @@ func (t *MargoTransformer) MergeWithAppPackage(req *margoNonStdAPI.ApplicationDe
 	return nil
 }
 
-func (t *MargoTransformer) mergeParameters(overrides *margoNonStdAPI.DeploymentParameters, defaultParams margoNonStdAPI.AppDescriptionParametersMap) error {
+func (t *MargoTransformer) mergeParameters(
+	overridesPtr **margoNonStdAPI.DeploymentParameters,
+	defaultParams margoNonStdAPI.AppDescriptionParametersMap,
+	profileComponents map[string]interface{},
+) error {
+	var overrides *margoNonStdAPI.DeploymentParameters
+	if overridesPtr != nil {
+		overrides = *overridesPtr
+	}
+
 	transformerLogger.Debug("Merging deployment parameter overrides with app description parameters",
 		"hasOverrides: ", overrides != nil,
 		"hasCompleteParams: ", len(defaultParams) > 0)
 
-	// If no overrides provided, nothing to merge
-	if overrides == nil {
-		transformerLogger.Debug("No deployment parameter overrides to merge")
-		return nil
+	mergedParams := make(margoNonStdAPI.DeploymentParameters)
+	for paramName, defaultParam := range defaultParams {
+		var matchedTargets []margoNonStdAPI.DeploymentParameterTarget
+		for _, target := range defaultParam.Targets {
+			var matchedComps []string
+			for _, comp := range target.Components {
+				if len(profileComponents) == 0 {
+					matchedComps = append(matchedComps, comp)
+				} else if _, ok := profileComponents[comp]; ok {
+					matchedComps = append(matchedComps, comp)
+				}
+			}
+			if len(matchedComps) > 0 {
+				matchedTargets = append(matchedTargets, margoNonStdAPI.DeploymentParameterTarget{
+					Components: matchedComps,
+					Pointer:    target.Pointer,
+				})
+			}
+		}
+		if len(matchedTargets) > 0 {
+			mergedParams[paramName] = margoNonStdAPI.DeploymentParameterValue{
+				Targets: matchedTargets,
+				Value:   defaultParam.Value,
+			}
+		}
 	}
 
-	// Iterate through deployment parameter overrides
-	for paramName, overrideValue := range *overrides {
-		existingParam, exists := defaultParams[paramName]
-		if !exists {
-			transformerLogger.Error("parameter doesn't exist in app description, can't proceed with overrides", "paramName", paramName)
-			return fmt.Errorf("parameter: %s doesn't exist in the application description, can't proceed with overrides", paramName)
+	if overrides != nil {
+		for paramName, overrideValue := range *overrides {
+			existingParam, exists := defaultParams[paramName]
+			if !exists {
+				transformerLogger.Error("parameter doesn't exist in app description, can't proceed with overrides", "paramName", paramName)
+				return fmt.Errorf("parameter: %s doesn't exist in the application description, can't proceed with overrides", paramName)
+			}
+
+			targets := overrideValue.Targets
+			if len(targets) == 0 {
+				if existingMerged, ok := mergedParams[paramName]; ok && len(existingMerged.Targets) > 0 {
+					targets = existingMerged.Targets
+				} else {
+					for _, target := range existingParam.Targets {
+						targets = append(targets, margoNonStdAPI.DeploymentParameterTarget{
+							Components: append([]string(nil), target.Components...),
+							Pointer:    target.Pointer,
+						})
+					}
+				}
+			}
+
+			mergedParams[paramName] = margoNonStdAPI.DeploymentParameterValue{
+				Targets: targets,
+				Value:   overrideValue.Value,
+			}
+
+			transformerLogger.Debug("Overrode existing parameter value",
+				"paramName", paramName,
+				"newValue", overrideValue.Value,
+				"hasTargets", len(targets) > 0)
 		}
+	}
 
-		// Parameter exists in app description - override the value while preserving other properties
-		existingParam.Value = overrideValue
-		defaultParams[paramName] = existingParam
-
-		transformerLogger.Debug("Overrode existing parameter value",
-			"paramName", paramName,
-			"newValue", overrideValue,
-			"hasTargets", len(existingParam.Targets) > 0)
+	if overridesPtr != nil && len(mergedParams) > 0 {
+		*overridesPtr = &mergedParams
 	}
 
 	transformerLogger.Debug("Parameter merging completed successfully",
-		"totalParams", len(defaultParams),
-		"overrideCount", len(*overrides))
+		"totalParams", len(mergedParams))
 
 	return nil
 }
@@ -660,13 +716,9 @@ func (t *MargoTransformer) buildComponentMap(profile margoNonStdAPI.AppDeploymen
 	components := make(map[string]interface{})
 	for _, component := range profile.Components {
 		switch profile.Type {
-		case margoNonStdAPI.AppDeploymentProfileTypeHelm:
-			if helmComp, err := component.AsApplicationDeploymentProfileComponent(); err == nil {
-				components[helmComp.Name] = helmComp
-			}
-		case margoNonStdAPI.AppDeploymentProfileTypeCompose:
-			if composeComp, err := component.AsApplicationDeploymentProfileComponent(); err == nil {
-				components[composeComp.Name] = composeComp
+		case margoNonStdAPI.AppDeploymentProfileTypeHelm, margoNonStdAPI.AppDeploymentProfileTypeCompose:
+			if comp, err := component.AsApplicationDeploymentProfileComponent(); err == nil {
+				components[comp.Name] = comp
 			}
 		}
 	}
@@ -675,45 +727,29 @@ func (t *MargoTransformer) buildComponentMap(profile margoNonStdAPI.AppDeploymen
 
 func (t *MargoTransformer) mergeComponent(reqComponent *margoNonStdAPI.DeploymentExecutionProfile_Components_Item, appComponents map[string]interface{}, profileType margoNonStdAPI.AppDeploymentProfileType) error {
 	switch profileType {
-	case margoNonStdAPI.AppDeploymentProfileTypeHelm:
-		return t.mergeHelmComponent(reqComponent, appComponents)
-	case margoNonStdAPI.AppDeploymentProfileTypeCompose:
-		return t.mergeComposeComponent(reqComponent, appComponents)
+	case margoNonStdAPI.AppDeploymentProfileTypeHelm, margoNonStdAPI.AppDeploymentProfileTypeCompose:
+		return t.mergeProfileComponent(reqComponent, appComponents)
 	default:
 		return fmt.Errorf("unsupported profile type: %s", profileType)
 	}
 }
 
-func (t *MargoTransformer) mergeHelmComponent(reqComponent *margoNonStdAPI.DeploymentExecutionProfile_Components_Item, appComponents map[string]interface{}) error {
+func (t *MargoTransformer) mergeProfileComponent(reqComponent *margoNonStdAPI.DeploymentExecutionProfile_Components_Item, appComponents map[string]interface{}) error {
 	reqComp, err := reqComponent.AsDeploymentProfileComponent()
 	if err != nil {
 		return err
 	}
 	if appCompInterface, exists := appComponents[reqComp.Name]; exists {
 		if appComp, ok := appCompInterface.(margoNonStdAPI.ApplicationDeploymentProfileComponent); ok {
-			merged := t.mergeHelmProperties(appComp, reqComp)
+			merged := t.mergeComponentProperties(appComp, reqComp)
 			return reqComponent.FromDeploymentProfileComponent(merged)
 		}
 	}
 	return nil
 }
 
-func (t *MargoTransformer) mergeComposeComponent(reqComponent *margoNonStdAPI.DeploymentExecutionProfile_Components_Item, appComponents map[string]interface{}) error {
-	reqComp, err := reqComponent.AsDeploymentProfileComponent()
-	if err != nil {
-		return err
-	}
-	if appCompInterface, exists := appComponents[reqComp.Name]; exists {
-		if appComp, ok := appCompInterface.(margoNonStdAPI.ApplicationDeploymentProfileComponent); ok {
-			merged := t.mergeComposeProperties(appComp, reqComp)
-			return reqComponent.FromDeploymentProfileComponent(merged)
-		}
-	}
-	return nil
-}
-
-// mergeHelmProperties merges helm component properties cleanly
-func (t *MargoTransformer) mergeHelmProperties(
+// mergeComponentProperties merges helm or compose component properties cleanly
+func (t *MargoTransformer) mergeComponentProperties(
 	appComp margoNonStdAPI.ApplicationDeploymentProfileComponent,
 	reqComp margoNonStdAPI.DeploymentProfileComponent,
 ) margoNonStdAPI.DeploymentProfileComponent {
@@ -727,22 +763,22 @@ func (t *MargoTransformer) mergeHelmProperties(
 		}{
 			Repository: t.selectString(reqComp.Properties.Repository, appComp.Properties.Repository),
 			Revision:   t.selectString(reqComp.Properties.Revision, appComp.Properties.Revision),
-			Timeout:    t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
-			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
+			Timeout:    coalescePtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
+			Wait:       coalescePtr(reqComp.Properties.Wait, appComp.Properties.Wait),
 		},
 		DeviceConstraints: t.selectDeviceConstraints(reqComp.DeviceConstraints, appComp.DeviceConstraints),
-		Workload:          t.selectWorkload(reqComp.Workload, appComp.Workload),
+		Workload:          coalescePtr(reqComp.Workload, appComp.Workload),
 	}
 }
 
 func (t *MargoTransformer) DbRowToDeploymentList(data []DeploymentDatabaseRow) (margoNonStdAPI.ApplicationDeploymentListResp, error) {
-	deployments := make([]margoNonStdAPI.ApplicationDeploymentManifestResp, len(data))
+	items := make([]margoNonStdAPI.ApplicationDeploymentManifestResp, len(data))
 	for i, row := range data {
-		deployments[i] = row.DeploymentRequest
+		items[i] = row.DeploymentRequest
 	}
 
 	return margoNonStdAPI.ApplicationDeploymentListResp{
-		Items: deployments,
+		Items: items,
 		Metadata: margoNonStdAPI.PaginationMetadata{
 			Continue: &[]bool{false}[0],
 		},
@@ -812,34 +848,4 @@ func (t *MargoTransformer) extractParameterValues(params margoNonStdAPI.AppDescr
 		}
 	}
 	return values
-}
-
-// ADD THIS METHOD for Compose merging:
-func (t *MargoTransformer) mergeComposeProperties(
-	appComp margoNonStdAPI.ApplicationDeploymentProfileComponent,
-	reqComp margoNonStdAPI.DeploymentProfileComponent,
-) margoNonStdAPI.DeploymentProfileComponent {
-	return margoNonStdAPI.DeploymentProfileComponent{
-		Name: reqComp.Name,
-		Properties: struct {
-			Repository string  `json:"repository"`
-			Revision   string  `json:"revision"`
-			Timeout    *string `json:"timeout,omitempty"`
-			Wait       *bool   `json:"wait,omitempty"`
-		}{
-			Repository: t.selectString(reqComp.Properties.Repository, appComp.Properties.Repository),
-			Revision:   t.selectString(reqComp.Properties.Revision, appComp.Properties.Revision),
-			Timeout:    t.selectStringPtr(reqComp.Properties.Timeout, appComp.Properties.Timeout),
-			Wait:       t.selectBoolPtr(reqComp.Properties.Wait, appComp.Properties.Wait),
-		},
-		DeviceConstraints: t.selectDeviceConstraints(reqComp.DeviceConstraints, appComp.DeviceConstraints),
-		Workload:          t.selectWorkload(reqComp.Workload, appComp.Workload),
-	}
-}
-
-func (t *MargoTransformer) selectWorkload(preferred, fallback *margoNonStdAPI.Workload) *margoNonStdAPI.Workload {
-	if preferred != nil {
-		return preferred
-	}
-	return fallback
 }

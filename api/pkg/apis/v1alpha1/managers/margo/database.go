@@ -262,6 +262,9 @@ func (db *MargoDatabase) ListAppPackages(ctx context.Context) ([]AppPackageDatab
 		jData, _ := json.Marshal(entry.Body)
 		err = json.Unmarshal(jData, &appPkg)
 		if err == nil {
+			if appPkg.PackageRequest.Id == nil || *appPkg.PackageRequest.Id == "" {
+				continue
+			}
 			packages = append(packages, appPkg)
 		} else {
 			db.MgrContext.Logger.WarnfCtx(ctx, "ListAppPackages: Failed to unmarshal entry: %v", err)
@@ -382,6 +385,9 @@ func (db *MargoDatabase) ListDeployments(ctx context.Context) ([]DeploymentDatab
 		jData, _ := json.Marshal(entry.Body)
 		err = json.Unmarshal(jData, &deployment)
 		if err == nil {
+			if deployment.DeploymentRequest.Id == nil || *deployment.DeploymentRequest.Id == "" {
+				continue
+			}
 			deployments = append(deployments, deployment)
 		} else {
 			db.MgrContext.Logger.WarnfCtx(ctx, "ListDeployments: Failed to unmarshal entry: %v", err)
@@ -713,6 +719,9 @@ func (db *MargoDatabase) ListDevices(ctx context.Context) ([]DeviceDatabaseRow, 
 		jData, _ := json.Marshal(entry.Body)
 		err = json.Unmarshal(jData, &device)
 		if err == nil {
+			if device.DeviceClientId == "" && device.DeviceId == "" {
+				continue
+			}
 			devices = append(devices, device)
 		} else {
 			db.MgrContext.Logger.WarnfCtx(ctx, "ListDevices: Failed to unmarshal entry: %v", err)

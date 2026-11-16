@@ -1,0 +1,48 @@
+{
+  "properties": {
+    "id": "canon-rt-dev-01",
+    "vendor": "Margo Spec Vendor",
+    "modelNumber": "M-2026",
+    "serialNumber": "SN-001-A",
+    "storage": "128Gi",
+    "cpus": [
+      {
+        "architecture": "amd64",
+        "class": "performance",
+        "type": "isolated",
+        "cores": 4.0,
+        "frequency": {
+          "baseMHz": 2600.0,
+          "maxMHz": 4900.0
+        }
+      }
+    ],
+    "cache": [
+      {
+        "level": "L3",
+        "allocationTypes": [
+          "exclusive",
+          "shared"
+        ],
+        "size": "9216Ki"
+      }
+    ],
+    "memory": {
+      "size": "1024Mi",
+      "bandwidthAllocationTypes": [
+        "percent-throttling",
+        "rate-limiting"
+      ]
+    },
+    "supportedDeploymentTypes": [
+      "helm",
+      "compose"
+    ],
+    "supportedRuntimes": [
+      "oci"
+    ]
+  },
+  "labels": {
+    "zone": "us-east-1"
+  }
+}
