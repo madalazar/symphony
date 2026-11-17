@@ -32,12 +32,13 @@ EOF
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 API_DIR="${REPO_ROOT}/api"
 OUTPUT_TAR="${OUTPUT_TAR:-${REPO_ROOT}/symphony-api.tar}"
 DOCKERFILE_PATH="${API_DIR}/Dockerfile"
 COMPOSE_PATH="${API_DIR}/docker-compose.yaml"
-GO_MOD_PATH="${API_DIR}/go.mod"
-LOCAL_SANDBOX_REPLACE="replace github.com/margo/sandbox => ../../sandbox"
+GO_WORK_PATH="${WORKSPACE_ROOT}/go.work"
+HARBOR_IMAGE_REF="${HARBOR_IMAGE_REF:-harbor.machine:8443/library/symphony-api:latest}"
 USE_LOCAL_OVERRIDE="${USE_LOCAL_OVERRIDE:-false}"
 NO_CACHE="${NO_CACHE:-true}"
 
@@ -61,7 +62,12 @@ restore_patched_files() {
 apply_local_override_inplace() {
   backup_file "$COMPOSE_PATH"
   backup_file "$DOCKERFILE_PATH"
-  backup_file "$GO_MOD_PATH"
+
+  # Refresh go.work.sum in the workspace root so it reflects local ./sandbox
+  if [[ -f "$GO_WORK_PATH" ]]; then
+    echo "Syncing go.work.sum with local sandbox in ${WORKSPACE_ROOT}..."
+    (cd "$WORKSPACE_ROOT" && go work sync)
+  fi
 
   # Patch compose paths only when they are at baseline values.
   # This keeps the operation idempotent across repeated runs.
@@ -76,20 +82,10 @@ apply_local_override_inplace() {
   sed -i 's|COPY ./coa /workspace/coa|COPY ./symphony/coa /workspace/coa|g' "$DOCKERFILE_PATH"
   sed -i 's|COPY ./api /workspace/api|COPY ./symphony/api /workspace/api|g' "$DOCKERFILE_PATH"
   if ! grep -q '^COPY ./sandbox /sandbox$' "$DOCKERFILE_PATH"; then
-    sed -i '/^COPY \.\/symphony\/api \/workspace\/api$/a COPY ./sandbox /sandbox' "$DOCKERFILE_PATH"
+    sed -i '/^COPY \.\/symphony\/api \/workspace\/api$/a COPY ./sandbox /sandbox\nCOPY ./go.work.sum /workspace/go.work.sum\nRUN printf "go ${GO_VERSION}\\n\\nuse (\\n\\t/sandbox\\n\\t./api\\n\\t./coa\\n\\t./packages/mage\\n)\\n" > /workspace/go.work' "$DOCKERFILE_PATH"
   fi
   sed -i 's|ADD ./api/symphony-api.json /|ADD ./symphony/api/symphony-api.json /|g' "$DOCKERFILE_PATH"
   sed -i 's|ADD ./api/symphony-api-margo.json /|ADD ./symphony/api/symphony-api-margo.json /|g' "$DOCKERFILE_PATH"
-
-  if grep -q '^replace github.com/margo/sandbox => ' "$GO_MOD_PATH"; then
-    sed -i "s|^replace github.com/margo/sandbox => .*|${LOCAL_SANDBOX_REPLACE}|g" "$GO_MOD_PATH"
-  elif grep -q '^replace github.com/eclipse-symphony/symphony/packages/mage => ../packages/mage$' "$GO_MOD_PATH"; then
-    sed -i '/^replace github.com\/eclipse-symphony\/symphony\/packages\/mage => ..\/packages\/mage$/a \
-\
-'"$LOCAL_SANDBOX_REPLACE" "$GO_MOD_PATH"
-  else
-    printf '\n%s\n' "$LOCAL_SANDBOX_REPLACE" >> "$GO_MOD_PATH"
-  fi
 
   trap restore_patched_files EXIT
 }
@@ -163,6 +159,9 @@ if [[ -z "${IMAGE_ID}" ]]; then
   echo "Tried compose image query and local inspect for '${IMAGE_REF}'." >&2
   exit 1
 fi
+
+docker tag "${IMAGE_ID}" "${HARBOR_IMAGE_REF}"
+echo "Tagged image ${IMAGE_ID} as ${HARBOR_IMAGE_REF}"
 
 SHORT_SHA="${IMAGE_ID#sha256:}"
 SHORT_SHA="${SHORT_SHA:0:12}"
