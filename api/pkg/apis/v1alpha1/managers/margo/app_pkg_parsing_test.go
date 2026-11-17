@@ -2,25 +2,115 @@ package margo
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/eclipse-symphony/symphony/api/pkg/apis/v1alpha1/model"
 	margoNonStdAPI "github.com/margo/sandbox/non-standard/generatedCode/wfm/nbi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 )
 
-func TestAppPkgParsing_RTBenchmark(t *testing.T) {
-	margoFixturePath := filepath.Join("testdata", "rt-benchmark-experiment-margo.yaml")
-	appPkg := parseTestAppPackageFromFile(t, margoFixturePath)
-	appDesc := appPkg.Description
-	resources := appPkg.Resources
-	require.NotNil(t, appDesc)
-	assert.NotNil(t, resources)
+type rawMargoYAML struct {
+	ID       string `yaml:"id"`
+	Metadata struct {
+		Name    string `yaml:"name"`
+		Version string `yaml:"version"`
+	} `yaml:"metadata"`
+	DeploymentProfiles []rawDeploymentProfile `yaml:"deploymentProfiles"`
+}
 
-	// Also verify the real workspace artefacts in sandbox/poc/tests/artefacts parse, validate, and match testdata copies
-	for _, pkgPair := range []struct {
+type rawDeploymentProfile struct {
+	Type              string                `yaml:"type"`
+	ID                string                `yaml:"id"`
+	Components        []rawComponent        `yaml:"components"`
+	DeviceConstraints *rawDeviceConstraints `yaml:"deviceConstraints"`
+}
+
+type rawComponent struct {
+	Name              string                `yaml:"name"`
+	Workload          *rawWorkload          `yaml:"workload"`
+	DeviceConstraints *rawDeviceConstraints `yaml:"deviceConstraints"`
+}
+
+type rawWorkload struct {
+	Scheduling *string      `yaml:"scheduling"`
+	Priority   *int         `yaml:"priority"`
+	Nice       *int         `yaml:"nice"`
+	Deadline   *rawDeadline `yaml:"deadline"`
+}
+
+type rawDeadline struct {
+	Deadline *int `yaml:"deadline"`
+	Period   *int `yaml:"period"`
+	Runtime  *int `yaml:"runtime"`
+}
+
+type rawDeviceConstraints struct {
+	CapacityRequirements *rawCapacityRequirements `yaml:"capacityRequirements"`
+	EligibilityRules     []rawEligibilityRule     `yaml:"eligibilityRules"`
+}
+
+type rawCapacityRequirements struct {
+	CPU     []rawCPU   `yaml:"cpu"`
+	Cache   []rawCache `yaml:"cache"`
+	Memory  *rawMemory `yaml:"memory"`
+	Storage *string    `yaml:"storage"`
+}
+
+type rawCPU struct {
+	Cores float32 `yaml:"cores"`
+	Class *string `yaml:"class"`
+	Type  *string `yaml:"type"`
+}
+
+type rawCache struct {
+	Level      string  `yaml:"level"`
+	Allocation string  `yaml:"allocation"`
+	Size       *string `yaml:"size"`
+}
+
+type rawMemory struct {
+	Size string `yaml:"size"`
+}
+
+type rawEligibilityRule struct {
+	PropertySelector *rawPropertySelector `yaml:"propertySelector"`
+}
+
+type rawPropertySelector struct {
+	MatchExpressions []rawMatchExpression `yaml:"matchExpressions"`
+}
+
+type rawMatchExpression struct {
+	Key      string `yaml:"key"`
+	Operator string `yaml:"operator"`
+	Values   []any  `yaml:"values"`
+}
+
+func loadRawMargoYAML(t *testing.T, path string) rawMargoYAML {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "must read %s", path)
+
+	var raw rawMargoYAML
+	require.NoError(t, yaml.Unmarshal(data, &raw), "must unmarshal raw YAML from %s", path)
+	return raw
+}
+
+func discoverTestdataYAMLs(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("testdata", "*.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "testdata must contain at least one YAML file")
+	return files
+}
+
+func TestTestdataMatchesWorkspaceArtefacts(t *testing.T) {
+	pkgPairs := []struct {
 		fixtureName string
 		artefactDir string
 	}{
@@ -28,184 +118,267 @@ func TestAppPkgParsing_RTBenchmark(t *testing.T) {
 		{"rt-benchmark-icore-margo.yaml", "rt-benchmark-icore-app"},
 		{"rt-benchmark-iecache-margo.yaml", "rt-benchmark-iecache-app"},
 		{"rt-benchmark-iscache-margo.yaml", "rt-benchmark-iscache-app"},
-	} {
-		fixturePkg := parseTestAppPackageFromFile(t, filepath.Join("testdata", pkgPair.fixtureName))
-		artefactPath := filepath.Join(
-			workspaceRootPath(t),
-			"sandbox", "poc", "tests", "artefacts", pkgPair.artefactDir, "margo-package", "margo.yaml",
-		)
-		require.FileExists(t, artefactPath, "real %s margo.yaml artefact must exist", pkgPair.artefactDir)
-		artefactPkg := parseTestAppPackageFromFile(t, artefactPath)
-		assert.Equal(t, fixturePkg.Description, artefactPkg.Description,
-			"testdata/%s must stay in sync with sandbox/poc/tests/artefacts/%s/margo-package/margo.yaml",
-			pkgPair.fixtureName, pkgPair.artefactDir)
 	}
 
-	require.NotNil(t, appDesc.Id)
-	assert.Equal(t, "rt-benchmark-experiment-suite", *appDesc.Id)
-	assert.Equal(t, "1.0.0", appDesc.Metadata.Version)
+	for _, pkgPair := range pkgPairs {
+		t.Run(pkgPair.artefactDir, func(t *testing.T) {
+			fixturePkg := parseTestAppPackageFromFile(t, filepath.Join("testdata", pkgPair.fixtureName))
+			artefactPath := filepath.Join(
+				workspaceRootPath(t),
+				"sandbox", "poc", "tests", "artefacts", pkgPair.artefactDir, "margo-package", "margo.yaml",
+			)
+			require.FileExists(t, artefactPath, "real %s margo.yaml artefact must exist", pkgPair.artefactDir)
+			artefactPkg := parseTestAppPackageFromFile(t, artefactPath)
+			assert.Equal(t, fixturePkg.Description, artefactPkg.Description,
+				"testdata/%s must stay in sync with sandbox/poc/tests/artefacts/%s/margo-package/margo.yaml",
+				pkgPair.fixtureName, pkgPair.artefactDir)
+		})
+	}
+}
 
-	require.Len(t, appDesc.DeploymentProfiles, 2, "must parse both helm and compose profiles")
+func TestAppPkgParsing_AllTestdata(t *testing.T) {
+	for _, yamlPath := range discoverTestdataYAMLs(t) {
+		t.Run(filepath.Base(yamlPath), func(t *testing.T) {
+			expected := loadRawMargoYAML(t, yamlPath)
+			appPkg := parseTestAppPackageFromFile(t, yamlPath)
+			appDesc := appPkg.Description
+			require.NotNil(t, appDesc)
+			assert.NotNil(t, appPkg.Resources)
 
-	// Profile 1: Helm
-	helmProfile := appDesc.DeploymentProfiles[0]
-	assert.Equal(t, margoNonStdAPI.AppDeploymentProfileTypeHelm, helmProfile.Type)
-	require.Len(t, helmProfile.Components, 3)
+			require.NotNil(t, appDesc.Id)
+			assert.Equal(t, expected.ID, *appDesc.Id)
+			assert.Equal(t, expected.Metadata.Name, appDesc.Metadata.Name)
+			assert.Equal(t, expected.Metadata.Version, appDesc.Metadata.Version)
+			require.Len(t, appDesc.DeploymentProfiles, len(expected.DeploymentProfiles))
 
-	// Helm component 1: caterpillar
-	catComp, err := helmProfile.Components[0].AsApplicationDeploymentProfileComponent()
-	require.NoError(t, err)
-	assert.Equal(t, "caterpillar", catComp.Name)
-	require.NotNil(t, catComp.DeviceConstraints)
-	require.NotNil(t, catComp.DeviceConstraints.CapacityRequirements)
-	require.NotNil(t, catComp.DeviceConstraints.CapacityRequirements.Cpu)
-	require.Len(t, *catComp.DeviceConstraints.CapacityRequirements.Cpu, 1)
-	catCPU := (*catComp.DeviceConstraints.CapacityRequirements.Cpu)[0]
-	assert.Equal(t, float32(1), catCPU.Cores)
-	require.NotNil(t, catCPU.Class)
-	assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementClass("performance"), *catCPU.Class)
-	require.NotNil(t, catCPU.Type)
-	assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementType("isolated"), *catCPU.Type)
+			for _, expProfile := range expected.DeploymentProfiles {
+				t.Run(expProfile.Type, func(t *testing.T) {
+					profile := requireProfileByType(t, appDesc, margoNonStdAPI.AppDeploymentProfileType(expProfile.Type))
+					require.Len(t, profile.Components, len(expProfile.Components))
+					assertDeviceConstraintsMatch(t, profile.DeviceConstraints, expProfile.DeviceConstraints)
 
-	require.NotNil(t, catComp.DeviceConstraints.CapacityRequirements.Cache)
-	require.Len(t, *catComp.DeviceConstraints.CapacityRequirements.Cache, 1)
-	catCache := (*catComp.DeviceConstraints.CapacityRequirements.Cache)[0]
-	assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementLevel("L3"), catCache.Level)
-	assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementAllocation("exclusive"), catCache.Allocation)
-	require.NotNil(t, catCache.Size)
-	assert.Equal(t, "9216Ki", *catCache.Size)
+					for _, expComp := range expProfile.Components {
+						comp := requireComponentByName(t, profile, expComp.Name)
+						assertWorkloadMatch(t, comp.Workload, expComp.Workload)
+						assertDeviceConstraintsMatch(t, comp.DeviceConstraints, expComp.DeviceConstraints)
+					}
+				})
+			}
+		})
+	}
+}
 
-	// Verify caterpillar eligibilityRules
-	require.NotNil(t, catComp.DeviceConstraints.EligibilityRules)
-	require.Len(t, *catComp.DeviceConstraints.EligibilityRules, 1)
-	catRule := (*catComp.DeviceConstraints.EligibilityRules)[0]
-	require.NotNil(t, catRule.PropertySelector)
-	require.Len(t, catRule.PropertySelector.MatchExpressions, 2)
-	assert.Equal(t, "/supportedDeploymentTypes", catRule.PropertySelector.MatchExpressions[0].Key)
-
-	// Helm component 2: cyclictest with RT workload attributes and isolated CPU
-	cyclicComp, err := helmProfile.Components[1].AsApplicationDeploymentProfileComponent()
-	require.NoError(t, err)
-	assert.Equal(t, "cyclictest", cyclicComp.Name)
-	require.NotNil(t, cyclicComp.Workload)
-	require.NotNil(t, cyclicComp.Workload.Scheduling)
-	assert.Equal(t, margoNonStdAPI.RealTime, *cyclicComp.Workload.Scheduling)
-	require.NotNil(t, cyclicComp.Workload.Priority)
-	assert.Equal(t, 95, *cyclicComp.Workload.Priority)
-	require.NotNil(t, cyclicComp.Workload.Nice)
-	assert.Equal(t, 10, *cyclicComp.Workload.Nice)
-	require.NotNil(t, cyclicComp.Workload.Deadline)
-	require.NotNil(t, cyclicComp.Workload.Deadline.Deadline)
-	assert.Equal(t, 10, *cyclicComp.Workload.Deadline.Deadline)
-	require.NotNil(t, cyclicComp.Workload.Deadline.Period)
-	assert.Equal(t, 16, *cyclicComp.Workload.Deadline.Period)
-	require.NotNil(t, cyclicComp.Workload.Deadline.Runtime)
-	assert.Equal(t, 5, *cyclicComp.Workload.Deadline.Runtime)
-
-	require.NotNil(t, cyclicComp.DeviceConstraints)
-	require.NotNil(t, cyclicComp.DeviceConstraints.CapacityRequirements)
-	require.NotNil(t, cyclicComp.DeviceConstraints.CapacityRequirements.Cpu)
-	require.Len(t, *cyclicComp.DeviceConstraints.CapacityRequirements.Cpu, 1)
-	cyclicCPU := (*cyclicComp.DeviceConstraints.CapacityRequirements.Cpu)[0]
-	assert.Equal(t, float32(1), cyclicCPU.Cores)
-	assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementType("isolated"), *cyclicCPU.Type)
-
-	// Profile deviceConstraints memory
-	require.NotNil(t, helmProfile.DeviceConstraints)
-	require.NotNil(t, helmProfile.DeviceConstraints.CapacityRequirements)
-	require.NotNil(t, helmProfile.DeviceConstraints.CapacityRequirements.Memory)
-	assert.Equal(t, "1024Mi", helmProfile.DeviceConstraints.CapacityRequirements.Memory.Size)
-	require.NotNil(t, helmProfile.DeviceConstraints.CapacityRequirements.Storage)
-	assert.Equal(t, "2Gi", *helmProfile.DeviceConstraints.CapacityRequirements.Storage)
-
-	// Profile 2: Compose
-	composeProfile := appDesc.DeploymentProfiles[1]
-	assert.Equal(t, margoNonStdAPI.AppDeploymentProfileTypeCompose, composeProfile.Type)
-	require.Len(t, composeProfile.Components, 3)
-
-	cyclicComposeComp, err := composeProfile.Components[0].AsApplicationDeploymentProfileComponent()
-	require.NoError(t, err)
-	assert.Equal(t, "cyclictest_compose", cyclicComposeComp.Name)
-	require.NotNil(t, cyclicComposeComp.Workload)
-	assert.Equal(t, margoNonStdAPI.RealTime, *cyclicComposeComp.Workload.Scheduling)
-	require.NotNil(t, cyclicComposeComp.Workload.Priority)
-	assert.Equal(t, 95, *cyclicComposeComp.Workload.Priority)
-	require.NotNil(t, cyclicComposeComp.Workload.Deadline)
-	require.NotNil(t, cyclicComposeComp.Workload.Deadline.Deadline)
-	assert.Equal(t, 10, *cyclicComposeComp.Workload.Deadline.Deadline)
-	require.NotNil(t, cyclicComposeComp.Workload.Deadline.Period)
-	assert.Equal(t, 25, *cyclicComposeComp.Workload.Deadline.Period)
-	require.NotNil(t, cyclicComposeComp.Workload.Deadline.Runtime)
-	assert.Equal(t, 5, *cyclicComposeComp.Workload.Deadline.Runtime)
-
-	catComposeComp, err := composeProfile.Components[2].AsApplicationDeploymentProfileComponent()
-	require.NoError(t, err)
-	assert.Equal(t, "caterpillar_compose", catComposeComp.Name)
-	require.NotNil(t, catComposeComp.DeviceConstraints)
-	require.NotNil(t, catComposeComp.DeviceConstraints.CapacityRequirements)
-	require.NotNil(t, catComposeComp.DeviceConstraints.CapacityRequirements.Cpu)
-	require.Len(t, *catComposeComp.DeviceConstraints.CapacityRequirements.Cpu, 1)
-	assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementType("isolated"), *(*catComposeComp.DeviceConstraints.CapacityRequirements.Cpu)[0].Type)
-
-	require.NotNil(t, catComposeComp.DeviceConstraints.CapacityRequirements.Cache)
-	require.Len(t, *catComposeComp.DeviceConstraints.CapacityRequirements.Cache, 1)
-	catComposeCache := (*catComposeComp.DeviceConstraints.CapacityRequirements.Cache)[0]
-	assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementLevel("L3"), catComposeCache.Level)
-	assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementAllocation("exclusive"), catComposeCache.Allocation)
-	require.NotNil(t, catComposeCache.Size)
-	assert.Equal(t, "9216Ki", *catComposeCache.Size)
-
-	require.NotNil(t, composeProfile.DeviceConstraints)
-	require.NotNil(t, composeProfile.DeviceConstraints.CapacityRequirements)
-	require.NotNil(t, composeProfile.DeviceConstraints.CapacityRequirements.Memory)
-	assert.Equal(t, "1024Mi", composeProfile.DeviceConstraints.CapacityRequirements.Memory.Size)
-	require.NotNil(t, composeProfile.DeviceConstraints.CapacityRequirements.Storage)
-	assert.Equal(t, "1Gi", *composeProfile.DeviceConstraints.CapacityRequirements.Storage)
-
-	// Transformation to Symphony objects
+func TestMargoTransformer_AllTestdata(t *testing.T) {
 	transformer := NewMargoTransformer()
-	pkgId := "rt-benchmark-experiment-suite"
-	dbRow := AppPackageDatabaseRow{
-		PackageRequest: margoNonStdAPI.ApplicationPackageManifestResp{
-			Id: &pkgId,
-			Metadata: margoNonStdAPI.Metadata{
-				Name: "RT Benchmark Experiment Suite",
-			},
-			Spec: margoNonStdAPI.ApplicationPackageSpec{
-				SourceType: margoNonStdAPI.OCIREPO,
-			},
-		},
-		AppDescription: appDesc,
+
+	for _, yamlPath := range discoverTestdataYAMLs(t) {
+		t.Run(filepath.Base(yamlPath), func(t *testing.T) {
+			appPkg := parseTestAppPackageFromFile(t, yamlPath)
+			appDesc := appPkg.Description
+			require.NotNil(t, appDesc)
+			require.NotNil(t, appDesc.Id)
+
+			catalog, solution, solutionContainer, err := transformer.AppPackageToSymphonyObjects(
+				context.Background(),
+				AppPackageDatabaseRow{
+					PackageRequest: appPkg.Package,
+					AppDescription: appDesc,
+				},
+				appPkg.Resources,
+			)
+			require.NoError(t, err, "AppPackageToSymphonyObjects must succeed")
+			require.NotNil(t, catalog)
+			require.NotNil(t, solution)
+			require.NotNil(t, solutionContainer)
+
+			expectedName := *appDesc.Id + "-v-" + appDesc.Metadata.Version
+			assert.Equal(t, expectedName, catalog.ObjectMeta.Name)
+			assert.Equal(t, expectedName, solution.ObjectMeta.Name)
+			assert.Equal(t, expectedName, solutionContainer.ObjectMeta.Name)
+			assert.Equal(t, strconv.Itoa(len(appDesc.DeploymentProfiles)), solution.Spec.Metadata["profileCount"])
+
+			expectedTotalComponents := 0
+			for _, profile := range appDesc.DeploymentProfiles {
+				expectedTotalComponents += len(profile.Components)
+				expectedType := expectedSymphonyComponentType(t, profile.Type)
+
+				for _, rawComp := range profile.Components {
+					comp, err := rawComp.AsApplicationDeploymentProfileComponent()
+					require.NoError(t, err)
+					solComp := requireSolutionComponentByName(t, solution.Spec.Components, comp.Name)
+					assert.Equal(t, expectedType, solComp.Type)
+				}
+			}
+			require.Len(t, solution.Spec.Components, expectedTotalComponents)
+		})
+	}
+}
+
+func expectedSymphonyComponentType(t *testing.T, profileType margoNonStdAPI.AppDeploymentProfileType) string {
+	t.Helper()
+	switch profileType {
+	case margoNonStdAPI.AppDeploymentProfileTypeHelm:
+		return "helm.v3"
+	case margoNonStdAPI.AppDeploymentProfileTypeCompose:
+		return "compose"
+	default:
+		t.Fatalf("unexpected deployment profile type %q", profileType)
+		return ""
+	}
+}
+
+func requireProfileByType(t *testing.T, appDesc *margoNonStdAPI.AppDescription, profileType margoNonStdAPI.AppDeploymentProfileType) margoNonStdAPI.AppDeploymentProfile {
+	t.Helper()
+	for _, profile := range appDesc.DeploymentProfiles {
+		if profile.Type == profileType {
+			return profile
+		}
+	}
+	t.Fatalf("deployment profile of type %q not found", profileType)
+	return margoNonStdAPI.AppDeploymentProfile{}
+}
+
+func requireComponentByName(t *testing.T, profile margoNonStdAPI.AppDeploymentProfile, name string) margoNonStdAPI.ApplicationDeploymentProfileComponent {
+	t.Helper()
+	for _, raw := range profile.Components {
+		comp, err := raw.AsApplicationDeploymentProfileComponent()
+		require.NoError(t, err)
+		if comp.Name == name {
+			return comp
+		}
+	}
+	t.Fatalf("component %q not found in profile %s", name, profile.Type)
+	return margoNonStdAPI.ApplicationDeploymentProfileComponent{}
+}
+
+func requireSolutionComponentByName(t *testing.T, components []model.ComponentSpec, name string) model.ComponentSpec {
+	t.Helper()
+	for _, comp := range components {
+		if comp.Name == name {
+			return comp
+		}
+	}
+	t.Fatalf("solution component %q not found", name)
+	return model.ComponentSpec{}
+}
+
+func assertWorkloadMatch(t *testing.T, actual *margoNonStdAPI.Workload, expected *rawWorkload) {
+	t.Helper()
+	if expected == nil {
+		assert.Nil(t, actual)
+		return
+	}
+	require.NotNil(t, actual)
+
+	if expected.Scheduling != nil {
+		require.NotNil(t, actual.Scheduling)
+		assert.Equal(t, margoNonStdAPI.WorkloadSchedulingType(*expected.Scheduling), *actual.Scheduling)
+	}
+	if expected.Priority != nil {
+		require.NotNil(t, actual.Priority)
+		assert.Equal(t, *expected.Priority, *actual.Priority)
+	}
+	if expected.Nice != nil {
+		require.NotNil(t, actual.Nice)
+		assert.Equal(t, *expected.Nice, *actual.Nice)
+	}
+	if expected.Deadline != nil {
+		require.NotNil(t, actual.Deadline)
+		if expected.Deadline.Deadline != nil {
+			require.NotNil(t, actual.Deadline.Deadline)
+			assert.Equal(t, *expected.Deadline.Deadline, *actual.Deadline.Deadline)
+		}
+		if expected.Deadline.Period != nil {
+			require.NotNil(t, actual.Deadline.Period)
+			assert.Equal(t, *expected.Deadline.Period, *actual.Deadline.Period)
+		}
+		if expected.Deadline.Runtime != nil {
+			require.NotNil(t, actual.Deadline.Runtime)
+			assert.Equal(t, *expected.Deadline.Runtime, *actual.Deadline.Runtime)
+		}
+	}
+}
+
+func assertDeviceConstraintsMatch(t *testing.T, actual *margoNonStdAPI.DeviceConstraints, expected *rawDeviceConstraints) {
+	t.Helper()
+	if expected == nil {
+		assert.Nil(t, actual)
+		return
+	}
+	require.NotNil(t, actual)
+
+	if expected.CapacityRequirements != nil {
+		require.NotNil(t, actual.CapacityRequirements)
+		assertCPUsMatch(t, actual.CapacityRequirements.Cpu, expected.CapacityRequirements.CPU)
+		assertCachesMatch(t, actual.CapacityRequirements.Cache, expected.CapacityRequirements.Cache)
+
+		if expected.CapacityRequirements.Memory != nil {
+			require.NotNil(t, actual.CapacityRequirements.Memory)
+			assert.Equal(t, expected.CapacityRequirements.Memory.Size, actual.CapacityRequirements.Memory.Size)
+		}
+		if expected.CapacityRequirements.Storage != nil {
+			require.NotNil(t, actual.CapacityRequirements.Storage)
+			assert.Equal(t, *expected.CapacityRequirements.Storage, *actual.CapacityRequirements.Storage)
+		}
 	}
 
-	catalog, solution, solutionContainer, err := transformer.AppPackageToSymphonyObjects(
-		context.Background(),
-		dbRow,
-		resources,
-	)
-	require.NoError(t, err, "AppPackageToSymphonyObjects must succeed")
-	require.NotNil(t, catalog)
-	require.NotNil(t, solution)
-	require.NotNil(t, solutionContainer)
-
-	assert.Equal(t, "rt-benchmark-experiment-suite-v-1.0.0", catalog.ObjectMeta.Name)
-	assert.Equal(t, "rt-benchmark-experiment-suite-v-1.0.0", solution.ObjectMeta.Name)
-	assert.Equal(t, "rt-benchmark-experiment-suite-v-1.0.0", solutionContainer.ObjectMeta.Name)
-	assert.Equal(t, "2", solution.Spec.Metadata["profileCount"])
-	require.Len(t, solution.Spec.Components, 6, "solution should contain components from all profiles")
-
-	var helmCompSpec, composeCompSpec *model.ComponentSpec
-	for i := range solution.Spec.Components {
-		comp := &solution.Spec.Components[i]
-		if comp.Name == "caterpillar" {
-			helmCompSpec = comp
-		}
-		if comp.Name == "caterpillar_compose" {
-			composeCompSpec = comp
+	if len(expected.EligibilityRules) > 0 {
+		require.NotNil(t, actual.EligibilityRules)
+		require.Len(t, *actual.EligibilityRules, len(expected.EligibilityRules))
+		for i, expRule := range expected.EligibilityRules {
+			actRule := (*actual.EligibilityRules)[i]
+			if expRule.PropertySelector != nil {
+				require.NotNil(t, actRule.PropertySelector)
+				require.Len(t, actRule.PropertySelector.MatchExpressions, len(expRule.PropertySelector.MatchExpressions))
+				for j, expExpr := range expRule.PropertySelector.MatchExpressions {
+					actExpr := actRule.PropertySelector.MatchExpressions[j]
+					assert.Equal(t, expExpr.Key, actExpr.Key)
+					assert.Equal(t, margoNonStdAPI.MatchExpressionOperator(expExpr.Operator), actExpr.Operator)
+					if expExpr.Values != nil {
+						require.NotNil(t, actExpr.Values)
+						assert.Equal(t, expExpr.Values, *actExpr.Values)
+					}
+				}
+			}
 		}
 	}
-	require.NotNil(t, helmCompSpec)
-	assert.Equal(t, "helm.v3", helmCompSpec.Type)
-	require.NotNil(t, composeCompSpec)
-	assert.Equal(t, "compose", composeCompSpec.Type)
+}
+
+func assertCPUsMatch(t *testing.T, actual *[]margoNonStdAPI.DeploymentCpuRequirement, expected []rawCPU) {
+	t.Helper()
+	if len(expected) == 0 {
+		return
+	}
+	require.NotNil(t, actual)
+	require.Len(t, *actual, len(expected))
+	for i, expCPU := range expected {
+		actCPU := (*actual)[i]
+		assert.Equal(t, expCPU.Cores, actCPU.Cores)
+		if expCPU.Class != nil {
+			require.NotNil(t, actCPU.Class)
+			assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementClass(*expCPU.Class), *actCPU.Class)
+		}
+		if expCPU.Type != nil {
+			require.NotNil(t, actCPU.Type)
+			assert.Equal(t, margoNonStdAPI.DeploymentCpuRequirementType(*expCPU.Type), *actCPU.Type)
+		}
+	}
+}
+
+func assertCachesMatch(t *testing.T, actual *[]margoNonStdAPI.DeploymentCacheRequirement, expected []rawCache) {
+	t.Helper()
+	if len(expected) == 0 {
+		return
+	}
+	require.NotNil(t, actual)
+	require.Len(t, *actual, len(expected))
+	for i, expCache := range expected {
+		actCache := (*actual)[i]
+		assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementLevel(expCache.Level), actCache.Level)
+		assert.Equal(t, margoNonStdAPI.DeploymentCacheRequirementAllocation(expCache.Allocation), actCache.Allocation)
+		if expCache.Size != nil {
+			require.NotNil(t, actCache.Size)
+			assert.Equal(t, *expCache.Size, *actCache.Size)
+		}
+	}
 }
